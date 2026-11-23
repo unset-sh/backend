@@ -35,5 +35,12 @@ map with `npm run map`, and update this section in the same piece of work.
 
 ## Commands
 
-There are no application or check commands yet, and no CI or agent-kit copy is installed. Add real commands
-and meaningful checks with implementation; do not claim that documentation establishes enforcement.
+```sh
+bun install --frozen-lockfile --ignore-scripts
+bun run check     # type check, Biome, dependency-cruiser boundaries, bun test, contract drift
+bun run openapi   # rewrite api/internal/openapi.yaml after changing a route's schema
+```
+
+Bun is the runtime (`.bun-version`, `bunfig.toml`, `bun.lock`; 7-day release age, no lifecycle scripts). The
+internal API's route schemas are its contract; commit the regenerated `api/internal/openapi.yaml` with the
+route. CI runs tooling's Bun check and `pr-policy`; the agent-kit copy is not installed yet.

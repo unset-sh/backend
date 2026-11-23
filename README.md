@@ -66,10 +66,11 @@ as a permanent protocol.
 
 Read [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md) and the
 [organisation map](https://github.com/unset-sh/.github/blob/main/MAP.md) before changing ownership.
-No install, build, test or run command exists yet. Add the supported commands and appropriate boundary checks
-with the first implementation slice; do not add empty packages or passing placeholder checks.
+The commands are in [CLAUDE.md](CLAUDE.md#commands): `bun run check` runs the type check, lint, module
+boundaries, tests and the internal API contract's drift check.
 Maintained guides belong under `docs/` when needed. AI task notes and review artifacts belong in agent-kit.
-Agent-kit installation, CI, releases and automatic consumer adoption remain pending.
+CI runs tooling's Bun check. Agent-kit installation, images, releases and automatic consumer adoption remain
+pending.
 
 ## Licence
 

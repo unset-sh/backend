@@ -1,0 +1,19 @@
+[install]
+# Write exact versions, never ranges.
+exact = true
+# No dependency lifecycle scripts, locally or in CI.
+ignoreScripts = true
+# Resolve only versions published at least 7 days ago, so a hijacked release has time to be caught before it
+# reaches us. Our own packages are exempt; Bun takes exact package names here, not scope patterns
+# (Bun 1.4.4 docs/runtime/bunfig.mdx). No @unset-sh package is installed yet.
+minimumReleaseAge = 604800 # seconds
+minimumReleaseAgeExcludes = []
+
+[install.scopes]
+# @unset-sh packages come from GitHub Packages, which needs a token even to read: GITHUB_TOKEN with
+# packages: read in CI, a read:packages token elsewhere.
+"@unset-sh" = { url = "https://npm.pkg.github.com", token = "$NPM_CONFIG_TOKEN" }
+
+[test]
+# Every test file sits next to the code it tests, under src/ or scripts/.
+root = "."
