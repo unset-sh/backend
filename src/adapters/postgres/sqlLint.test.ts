@@ -1,8 +1,8 @@
 // P1.11: what an expand migration may not do, and the index comment rule, read from SQL text.
+import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
 import { lintMigration } from "./sqlLint.ts";
 
 const root = mkdtempSync(join(tmpdir(), "unset-sqllint-"));

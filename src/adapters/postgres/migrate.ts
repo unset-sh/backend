@@ -1,16 +1,16 @@
 // The migration runner (P1.11; plan §5.2): SQL files applied once, in order, by the `migrator` role, under an advisory
-// lock, with checksums that stop edited history and a "database ahead" rule for rollback deploys. Driver: node-postgres
-// 8.23.0 (ADR 0014); multi-statement files run over the simple query protocol (node_modules/pg/lib/client.js query()
-// with no values), which Postgres runs as one implicit transaction unless the file is already inside ours.
+// lock, with checksums that stop edited history and a "database ahead" rule for rollback deploys. Driver: Bun.sql
+// (org-0015). A file runs through `sql.unsafe` with no values, which sends it over the simple query protocol, so it may
+// hold several statements, and Postgres runs it as one implicit transaction unless it is already inside ours (Bun 1.4.4
+// docs/runtime/sql.mdx, "sql``.simple()" and "Unsafe Queries"). The pool has one connection, so the session-level
+// advisory lock and every query share it.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Logger } from "@unset/shared-log";
-import pg from "pg";
+import { SQL } from "bun";
+import type { Logger } from "../../shared/log/index.ts";
 import type { Connection } from "./config.ts";
-import { type PasswordSyncResult, syncRolePasswords } from "./roles.ts";
 import { type LintProblem, lintMigration, type Phase, type QueryFiles } from "./sqlLint.ts";
-import { inTransaction } from "./tx.ts";
 
 /** The advisory lock key every runner takes: "unse" in ASCII. */
 export const MIGRATE_LOCK_ID = 0x756e7365;
@@ -111,26 +111,28 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   if (client === null) return report(options.log, failure(1, "connect_failed"));
   try {
     return report(options.log, await migrateAsMigrator(client, migrations, options.lockWaitMs ?? 60_000));
+  } catch (error) {
+    // A query outside a migration file failed (the connection dropped): a fixed reason and the SQLSTATE, no message.
+    return report(options.log, failure(1, "database", { sqlstate: sqlstateOf(error) }));
   } finally {
     // Ending the session also releases the advisory lock if a query above threw before the explicit unlock.
-    await client.end();
+    await client.close();
   }
 }
 
-async function migrateAsMigrator(client: pg.Client, migrations: Migration[], lockWaitMs: number) {
-  const who = await client.query<{ ok: boolean }>("SELECT current_user = 'migrator' AS ok");
-  if (who.rows[0]?.ok !== true) return failure(1, "not_migrator");
+async function migrateAsMigrator(client: SQL, migrations: Migration[], lockWaitMs: number) {
+  const [who] = await client<{ ok: boolean }[]>`SELECT current_user = 'migrator' AS ok`;
+  if (who?.ok !== true) return failure(1, "not_migrator");
   if (!(await lock(client, lockWaitMs))) return failure(1, "lock_timeout");
   const result = await migrateLocked(client, migrations);
-  await client.query("SELECT pg_advisory_unlock($1)", [MIGRATE_LOCK_ID]);
+  await client`SELECT pg_advisory_unlock(${MIGRATE_LOCK_ID})`;
   return result;
 }
 
-async function migrateLocked(client: pg.Client, migrations: Migration[]): Promise<MigrateResult> {
-  await client.query(CREATE_TABLE);
-  const { rows } = await client.query<{ version: number; checksum: string }>(
-    "SELECT version, checksum FROM public.schema_migrations ORDER BY version",
-  );
+async function migrateLocked(client: SQL, migrations: Migration[]): Promise<MigrateResult> {
+  await client.unsafe(CREATE_TABLE);
+  const rows = await client<{ version: number; checksum: string }[]>`
+    SELECT version, checksum FROM public.schema_migrations ORDER BY version`;
   const byVersion = new Map(migrations.map((m) => [m.version, m]));
   const edited = rows.find((row) => (byVersion.get(row.version)?.checksum ?? row.checksum) !== row.checksum);
   if (edited !== undefined) {
@@ -150,16 +152,16 @@ async function migrateLocked(client: pg.Client, migrations: Migration[]): Promis
   return { ok: true, applied, ahead: [] };
 }
 
-async function apply(client: pg.Client, m: Migration): Promise<MigrateFailure | null> {
-  const run = async (): Promise<void> => {
-    await client.query(m.sql);
-    await client.query(
-      "INSERT INTO public.schema_migrations (version, name, checksum, phase) VALUES ($1, $2, $3, $4)",
-      [m.version, m.file, m.checksum, m.phase],
-    );
+async function apply(client: SQL, m: Migration): Promise<MigrateFailure | null> {
+  const run = async (sql: SQL): Promise<void> => {
+    await sql.unsafe(m.sql);
+    await sql`INSERT INTO public.schema_migrations (version, name, checksum, phase)
+      VALUES (${m.version}, ${m.file}, ${m.checksum}, ${m.phase})`;
   };
   try {
-    await (m.noTx ? run() : inTransaction(client, run));
+    // sql.begin opens the one transaction a file runs in and rolls it back on a throw (docs/runtime/sql.mdx,
+    // "Transactions"). A no-transaction file (CREATE INDEX CONCURRENTLY) runs on the connection itself.
+    await (m.noTx ? run(client) : client.begin((tx) => run(tx)));
     return null;
   } catch (error) {
     // A no-transaction file may have left part of its work; it must be idempotent so the next run can retry it.
@@ -168,39 +170,44 @@ async function apply(client: pg.Client, m: Migration): Promise<MigrateFailure | 
   }
 }
 
-/** The Postgres SQLSTATE of a driver error, never its message (which can quote row values). */
+/**
+ * The Postgres SQLSTATE of a driver error, never its message (which can quote row values). Bun.sql puts the server's
+ * code in `errno` and its own `ERR_POSTGRES_*` name in `code` (docs/runtime/sql.mdx, "Error Handling").
+ */
 function sqlstateOf(error: unknown): string | undefined {
-  const first = error instanceof AggregateError ? error.errors[0] : error;
-  const code = (first as { code?: unknown } | null)?.code;
-  return typeof code === "string" && SQLSTATE.test(code) ? code : undefined;
+  const errno = error instanceof SQL.PostgresError ? (error as { errno?: unknown }).errno : undefined;
+  return typeof errno === "string" && SQLSTATE.test(errno) ? errno : undefined;
 }
 
 /** Waits for the session-level advisory lock, polling, so a second runner gives up cleanly after `waitMs`. */
-async function lock(client: pg.Client, waitMs: number): Promise<boolean> {
+async function lock(client: SQL, waitMs: number): Promise<boolean> {
   const until = Date.now() + waitMs;
   for (;;) {
-    const { rows } = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock($1) AS locked", [
-      MIGRATE_LOCK_ID,
-    ]);
-    if (rows[0]?.locked === true) return true;
+    const [row] = await client<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(${MIGRATE_LOCK_ID}) AS locked`;
+    if (row?.locked === true) return true;
     if (Date.now() + LOCK_POLL_MS > until) return false;
     await sleep(LOCK_POLL_MS);
   }
 }
 
 /** Connects, retrying while Postgres is unreachable or still starting; a refusal from a running server is final. */
-async function connect(connection: Connection, delaysMs: readonly number[]): Promise<pg.Client | null> {
+async function connect(connection: Connection, delaysMs: readonly number[]): Promise<SQL | null> {
   for (let attempt = 0; ; attempt += 1) {
-    const client = new pg.Client({ ...connection, application_name: "migrate", connectionTimeoutMillis: 5000 });
-    // A dropped connection fails the query in flight; without a listener the 'error' event would end the process.
-    client.on("error", () => undefined);
+    const client = new SQL({
+      adapter: "postgres",
+      ...connection,
+      max: 1,
+      connectionTimeout: 5,
+      // A migration may take long; keep the one connection for the whole run.
+      idleTimeout: 0,
+      maxLifetime: 0,
+      connection: { application_name: "migrate", lock_timeout: "5s", statement_timeout: "15min" },
+    });
     try {
-      await client.connect();
-      await client.query("SET lock_timeout = '5s'");
-      await client.query("SET statement_timeout = '15min'");
+      await client`SELECT 1`;
       return client;
     } catch (error) {
-      await client.end().catch(() => undefined); // the connection never opened; there is nothing left to close
+      await client.close({ timeout: 0 }).catch(() => undefined); // nothing opened; there is nothing left to close
       const code = sqlstateOf(error);
       const retryable = code === undefined || code === "57P03"; // 57P03: the database system is starting up
       const delay = delaysMs[attempt];
@@ -226,22 +233,4 @@ function report(log: Logger, result: MigrateResult): MigrateResult {
     log.info("migrate.done", { count: result.applied.length });
   }
   return result;
-}
-
-export type MigrateServiceResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly step: "migrate"; readonly failure: MigrateFailure }
-  | { readonly ok: false; readonly step: "passwords"; readonly failure: Exclude<PasswordSyncResult, { ok: true }> };
-
-/**
- * The `migrate` service's run (P1.29k, the P1.12x binding): the migrations, then the roster roles' passwords from
- * `secretsDir`, never the passwords when a migration fails. The CLI passes the fixed /run/secrets.
- */
-export async function migrateThenSyncPasswords(
-  options: MigrateOptions & { readonly secretsDir: string },
-): Promise<MigrateServiceResult> {
-  const migrated = await migrate(options);
-  if (!migrated.ok) return { ok: false, step: "migrate", failure: migrated };
-  const synced = await syncRolePasswords({ connection: options.connection, secretsDir: options.secretsDir });
-  return synced.ok ? { ok: true } : { ok: false, step: "passwords", failure: synced };
 }

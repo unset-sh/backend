@@ -1,12 +1,12 @@
 // P1.11: the Postgres connection settings, read through the migrate CLI schema, and the sslmode mapping. P1.11p: the
-// pool fields and the private CA file. P1.29k: the CLI reads role passwords only from the fixed /run/secrets.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// pool fields and the private CA file.
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigError, defineConfig, loadConfig } from "@unset/shared-config";
-import { describe, expect, test } from "vitest";
-import { connectionOf, lockPoolFields, poolFields, postgresFields } from "./config.ts";
-import { migrateConfig, ROLE_PASSWORDS_DIR } from "./migrate-cli.ts";
+import { ConfigError, defineConfig, loadConfig } from "../../shared/config/index.ts";
+import { connectionOf, poolFields, postgresFields } from "./config.ts";
+import { migrateConfig } from "./migrate-cli.ts";
 
 const passwordFile = join(mkdtempSync(join(tmpdir(), "unset-migrate-cli-")), "pg_migrator_password");
 writeFileSync(passwordFile, "a-test-password-of-enough-bytes\n");
@@ -30,18 +30,20 @@ describe("migrate CLI config", () => {
     expect(cfg.PG_PORT).toBe(5432);
     expect(String(cfg.PG_PASSWORD)).toBe("[secret]");
     expect(connectionOf(cfg)).toEqual({
-      host: "postgres",
+      hostname: "postgres",
       port: 5432,
       database: "unset",
-      user: "migrator",
+      username: "migrator",
       password: "a-test-password-of-enough-bytes",
-      ssl: false,
+      tls: false,
     });
   });
 
   test("migrate_config_plain_tcp_only_inside_compose", () => {
     expect(() => load({ PG_HOST: "db.example.org" })).toThrow(ConfigError);
-    expect(connectionOf(load({ PG_HOST: "db.example.org", PG_SSLMODE: "verify-full" })).ssl).toBe(true);
+    expect(connectionOf(load({ PG_HOST: "db.example.org", PG_SSLMODE: "verify-full" })).tls).toEqual({
+      rejectUnauthorized: true,
+    });
     expect(() => load({ PG_HOST: "db.example.org", PG_SSLMODE: "require" })).toThrow(ConfigError);
   });
 
@@ -60,23 +62,12 @@ const loadPool = (overrides: Record<string, string> = {}) =>
 describe("pool config", () => {
   test("pool_config_defaults_and_ranges", () => {
     const cfg = loadPool();
-    expect([cfg.PG_POOL_MAX, cfg.PG_CONNECT_TIMEOUT_MS, cfg.PG_MAX_REPLICAS]).toEqual([10, 2000, 3]);
-    // 0 is node-postgres's "wait forever".
-    expect(() => loadPool({ PG_CONNECT_TIMEOUT_MS: "0" })).toThrow(ConfigError);
+    expect([cfg.PG_POOL_MAX, cfg.PG_CONNECT_TIMEOUT_S]).toEqual([10, 5]);
+    // 0 is Bun.sql's "wait forever".
+    expect(() => loadPool({ PG_CONNECT_TIMEOUT_S: "0" })).toThrow(ConfigError);
     expect(() => loadPool({ PG_POOL_MAX: "0" })).toThrow(ConfigError);
     expect(() => loadPool({ PG_POOL_MAX: "51" })).toThrow(ConfigError);
-    expect(() => loadPool({ PG_MAX_REPLICAS: "5" })).toThrow(ConfigError);
     expect(() => loadConfig(poolConfig, env(), { onUnknownKeys: () => undefined })).toThrow(ConfigError);
-  });
-
-  test("lock_pool_max_default_and_range", () => {
-    const lockConfig = defineConfig({ ...postgresFields, ...lockPoolFields });
-    const loadLock = (overrides: Record<string, string> = {}) =>
-      loadConfig(lockConfig, env(overrides), { onUnknownKeys: () => undefined });
-    expect(loadLock().LOCK_POOL_MAX).toBe(8);
-    expect(loadLock({ LOCK_POOL_MAX: "2" }).LOCK_POOL_MAX).toBe(2);
-    expect(() => loadLock({ LOCK_POOL_MAX: "0" })).toThrow(ConfigError);
-    expect(() => loadLock({ LOCK_POOL_MAX: "21" })).toThrow(ConfigError);
   });
 
   test("sslmode_disable_refused_for_dotted_or_ip_host", () => {
@@ -100,23 +91,15 @@ describe("pool config", () => {
       const caFile = join(dir, "ca.pem");
       writeFileSync(caFile, "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n");
       const cfg = loadPool({ PG_HOST: "db.example.org", PG_SSLMODE: "verify-full", PG_SSLROOTCERT: caFile });
-      expect(connectionOf(cfg).ssl).toEqual({ ca: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n" });
+      expect(connectionOf(cfg).tls).toEqual({
+        rejectUnauthorized: true,
+        ca: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+      });
       // A CA file only means something with the checks on.
       expect(() => loadPool({ PG_SSLROOTCERT: caFile })).toThrow(ConfigError);
       expect(() => loadPool({ PG_SSLMODE: "verify-full", PG_SSLROOTCERT: "relative/ca.pem" })).toThrow(ConfigError);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("migrate CLI password folder", () => {
-  test("migrate_cli_reads_passwords_only_from_run_secrets", () => {
-    // A constant, never configuration (architecture amendment 2026-10-07-p129-migrate-image-and-run-only-images, 1).
-    expect(ROLE_PASSWORDS_DIR).toBe("/run/secrets");
-    expect(Object.keys(migrateConfig.fields).filter((key) => /SECRET|PASSWORDS?_DIR|ROLE/.test(key))).toEqual([]);
-    const source = readFileSync(join(import.meta.dirname, "migrate-cli.ts"), "utf8");
-    expect(source.match(/secretsDir:[^,\n]*/g)).toEqual(["secretsDir: ROLE_PASSWORDS_DIR"]);
-    expect(source).not.toMatch(/process\.env/);
   });
 });

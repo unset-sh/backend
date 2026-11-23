@@ -12,7 +12,8 @@
     "format": "biome format --write .",
     "test": "bun test",
     "openapi": "bun scripts/openapi.ts",
-    "check": "bun run typecheck && bun run lint && bun run test && bun scripts/openapi.ts --check"
+    "check": "bun run typecheck && bun run lint && bun run test && bun scripts/openapi.ts --check",
+    "migrate": "bun src/adapters/postgres/migrate-cli.ts"
   },
   "dependencies": {
     "@elysia/openapi": "1.4.17",

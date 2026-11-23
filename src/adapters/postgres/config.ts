@@ -1,9 +1,8 @@
 // The Postgres connection settings every process that connects merges into its schema (P1.11; moved here in P1.11p so
 // the migrate CLI and each pool read the same fields). Each field carries its cross-field rule.
 import { readFileSync } from "node:fs";
-import { classifyAddress } from "@unset/infrastructure-net-guard";
-import { type Config, int, oneOf, secretFile, str, withRule } from "@unset/shared-config";
-import type pg from "pg";
+import { BlockList, isIP } from "node:net";
+import { type Config, int, oneOf, secretFile, str, withRule } from "../../shared/config/index.ts";
 
 /** A lowercase hostname or a Compose service name; no scheme, port or trailing dot. */
 const HOSTNAME = /[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*/;
@@ -12,13 +11,19 @@ const SERVICE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 /** An unquoted Postgres identifier. */
 const IDENTIFIER = /[a-z_][a-z0-9_]{0,62}/;
 
+/** Loopback literals: 127.0.0.0/8 and ::1 (RFC 1122 3.2.1.3, RFC 4291 2.5.3). */
+const LOOPBACK = new BlockList();
+LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK.addAddress("::1", "ipv6");
+
 /**
- * Whether `disable` may reach this host: a Compose service name, or a loopback address as net-guard classifies it
- * (net-guard is the only IP class table). Not `isInternalName`, which also admits `.local`, `.internal` and metadata
- * names that can sit outside the host.
+ * Whether `disable` may reach this host: a Compose service name, or a loopback address literal. Not a name such as
+ * `localhost` or `.internal`, which can resolve outside the host. The egress guard's address classifier replaces
+ * this table when it arrives (first slice step 6), so there is one IP class table.
  */
 function plainTcpAllowed(host: string): boolean {
-  return SERVICE_NAME.test(host) || classifyAddress(host) === "loopback";
+  const family = isIP(host);
+  return SERVICE_NAME.test(host) || (family !== 0 && LOOPBACK.check(host, family === 4 ? "ipv4" : "ipv6"));
 }
 
 export const postgresFields = {
@@ -43,44 +48,43 @@ export const postgresFields = {
 /** Pool sizing (P1.11p), for processes that hold a pool; the migrate CLI has none. */
 export const poolFields = {
   PG_POOL_MAX: int({ min: 1, max: 50 }),
-  /** The longest wait for a pooled client. 0, which node-postgres reads as "wait forever", is outside the range. */
-  PG_CONNECT_TIMEOUT_MS: int({ min: 100, max: 10_000, default: 2000 }),
-  /** The most replicas of one service alive at once during a rollout. */
-  PG_MAX_REPLICAS: int({ min: 1, max: 4, default: 3 }),
+  /** The longest wait for a new connection, in seconds. Bun.sql reads 0 as "wait forever", so it is outside the range. */
+  PG_CONNECT_TIMEOUT_S: int({ min: 1, max: 30, default: 5 }),
 };
 
 /**
- * The advisory lock pool (P1.17), for processes that serialise work per DID (the OAuth client's token refresh). Its
- * own small pool, so callers waiting on a lock cannot starve normal queries; `checkConnectionBudget` counts it with
- * PG_POOL_MAX.
+ * What a client or pool needs to reach Postgres, in Bun.sql's option names (Bun 1.4.4 docs/runtime/sql.mdx,
+ * "PostgreSQL Options"). Every field is set, so Bun never falls back to a PG* environment variable.
  */
-export const lockPoolFields = {
-  LOCK_POOL_MAX: int({ min: 1, max: 20, default: 8 }),
+export type Connection = {
+  readonly hostname: string;
+  readonly port: number;
+  readonly database: string;
+  readonly username: string;
+  readonly password: string;
+  readonly tls: false | { readonly rejectUnauthorized: true; readonly ca?: string };
 };
-
-/** What a client or pool needs to reach Postgres. */
-export type Connection = Pick<pg.ClientConfig, "host" | "port" | "database" | "user" | "password" | "ssl">;
 
 export type PostgresConfig = Config<typeof postgresFields>;
 
 /**
- * libpq's sslmode in node-postgres terms: `ssl: true`, or `{ ca }` for a private CA, keeps Node's tls defaults, so the
- * chain and the host name are checked (pg 8.23.0 lib/connection.js:102-121 sets `servername`). Never
- * `rejectUnauthorized: false`. A missing CA file throws here, at boot.
+ * libpq's sslmode in Bun.sql terms. A `tls` object with `rejectUnauthorized: true` (and `ca` for a private CA) is
+ * verify-full: chain and host name checked (Bun 1.4.4 docs/runtime/sql.mdx, "SSL Modes"), and it keeps checking even
+ * when NODE_TLS_REJECT_UNAUTHORIZED=0 is set. A missing CA file throws here, at boot.
  */
 export function connectionOf(cfg: PostgresConfig): Connection {
-  const ssl =
+  const tls =
     cfg.PG_SSLMODE === "disable"
       ? false
       : cfg.PG_SSLROOTCERT === ""
-        ? true
-        : { ca: readFileSync(cfg.PG_SSLROOTCERT, "utf8") };
+        ? ({ rejectUnauthorized: true } as const)
+        : ({ rejectUnauthorized: true, ca: readFileSync(cfg.PG_SSLROOTCERT, "utf8") } as const);
   return {
-    host: cfg.PG_HOST,
+    hostname: cfg.PG_HOST,
     port: cfg.PG_PORT,
     database: cfg.PG_DATABASE,
-    user: cfg.PG_USER,
+    username: cfg.PG_USER,
     password: cfg.PG_PASSWORD.reveal(),
-    ssl,
+    tls,
   };
 }

@@ -39,7 +39,11 @@ map with `npm run map`, and update this section in the same piece of work.
 bun install --frozen-lockfile --ignore-scripts
 bun run check     # type check, Biome, dependency-cruiser boundaries, bun test, contract drift
 bun run openapi   # rewrite api/internal/openapi.yaml after changing a route's schema
+bun run migrate   # apply the migrations as `migrator` (PG_* settings, PG_PASSWORD_FILE)
 ```
+
+The Postgres tests run against a real server and fail, never skip, without one: set `PGHOST`, `PGUSER` (a
+superuser) and, if needed, `PGPORT` and `PGPASSWORD` for a disposable Postgres. CI gets one from tooling's check.
 
 Bun is the runtime (`.bun-version`, `bunfig.toml`, `bun.lock`; 7-day release age, no lifecycle scripts). The
 internal API's route schemas are its contract; commit the regenerated `api/internal/openapi.yaml` with the
