@@ -30,6 +30,14 @@ module.exports = {
       to: { dependencyTypes: ["npm", "npm-dev"], path: `^node_modules/${sdk}/` },
     })),
     {
+      name: "sql-home",
+      severity: "error",
+      comment: "Bun.sql (the `bun` module) is reached only through the Postgres adapter.",
+      from: { pathNot: "^src/adapters/postgres/" },
+      // dependency-cruiser resolves `bun` to its type package, @types/bun.
+      to: { path: "^node_modules/@types/bun/" },
+    },
+    {
       name: "domain-no-io",
       severity: "error",
       comment: "A domain gets I/O through a port, never from a built-in.",

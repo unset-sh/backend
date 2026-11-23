@@ -14,10 +14,13 @@ concurrency:
 
 jobs:
   check:
-    # tooling main after unset-sh/tooling#22 (Bun check).
-    uses: unset-sh/tooling/.github/workflows/ci-check.yml@7cd2e8c3d284cd9bb90c54f336adc0834b515d97
+    # tooling main after unset-sh/tooling#23 (Bun check with a Postgres service).
+    uses: unset-sh/tooling/.github/workflows/ci-check.yml@5cdc97a1440b04e48cba766909cd26099deef6bb
     permissions:
       contents: read
       packages: read # the shared workflow's install step asks for it; no @unset-sh package is installed yet
     with:
       install: true
+      # The tests run against a real Postgres (src/adapters/postgres/test-database.ts). postgres:18, digest read from
+      # registry-1.docker.io on 2026-11-23.
+      postgres-image: postgres:18@sha256:f5cbc081c25690710f3fc6f4c61a7565382bae01ca0d0f2028a53d7926b85a20
