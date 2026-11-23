@@ -1,8 +1,9 @@
 // The Postgres connection settings every process that connects merges into its schema (P1.11; moved here in P1.11p so
 // the migrate CLI and each pool read the same fields). Each field carries its cross-field rule.
 import { readFileSync } from "node:fs";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import { type Config, int, oneOf, secretFile, str, withRule } from "../../shared/config/index.ts";
+import { classifyAddress } from "../egress/index.ts";
 
 /** A lowercase hostname or a Compose service name; no scheme, port or trailing dot. */
 const HOSTNAME = /[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*/;
@@ -11,19 +12,13 @@ const SERVICE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 /** An unquoted Postgres identifier. */
 const IDENTIFIER = /[a-z_][a-z0-9_]{0,62}/;
 
-/** Loopback literals: 127.0.0.0/8 and ::1 (RFC 1122 3.2.1.3, RFC 4291 2.5.3). */
-const LOOPBACK = new BlockList();
-LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
-LOOPBACK.addAddress("::1", "ipv6");
-
 /**
- * Whether `disable` may reach this host: a Compose service name, or a loopback address literal. Not a name such as
- * `localhost` or `.internal`, which can resolve outside the host. The egress guard's address classifier replaces
- * this table when it arrives (first slice step 6), so there is one IP class table.
+ * Whether `disable` may reach this host: a Compose service name, or a loopback address literal by the egress guard's
+ * classifier, so there is one IP class table. Not a name such as `localhost` or `.internal`, which can resolve outside
+ * the host.
  */
 function plainTcpAllowed(host: string): boolean {
-  const family = isIP(host);
-  return SERVICE_NAME.test(host) || (family !== 0 && LOOPBACK.check(host, family === 4 ? "ipv4" : "ipv6"));
+  return SERVICE_NAME.test(host) || (isIP(host) !== 0 && classifyAddress(host) === "loopback");
 }
 
 export const postgresFields = {
