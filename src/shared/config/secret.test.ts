@@ -1,6 +1,7 @@
 // Secret never prints its value (P1.02).
+
+import { describe, expect, test } from "bun:test";
 import { inspect } from "node:util";
-import { describe, expect, test } from "vitest";
 import { defineConfig, loadConfig, Secret, secret } from "./index.ts";
 
 const quiet = { onUnknownKeys: () => undefined };

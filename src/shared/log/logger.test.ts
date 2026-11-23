@@ -1,5 +1,5 @@
-import { AppError } from "@unset/shared-errors";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
+import { AppError } from "../errors/index.ts";
 import { createLogger, type LogFields } from "./index.ts";
 
 /** A logger writing into an array, with a fixed clock. */
@@ -286,9 +286,9 @@ describe("logger", () => {
     expect(lines.join("")).not.toContain("secret value");
     expect(lines.join("")).not.toContain("stack");
     const dev = capture("dev");
-    dev.log.logError(new AppError("csrf.denied", { cause: new Error("secret value") }));
+    dev.log.logError(new AppError("http.bad_request", { cause: new Error("secret value") }));
     const [record] = dev.records();
-    expect(record).toMatchObject({ event: "error", code: "csrf.denied", kind: "AppError" });
+    expect(record).toMatchObject({ event: "error", code: "http.bad_request", kind: "AppError" });
     expect(String(record?.stack)).toMatch(/logger\.test\.ts:\d+/);
     expect(dev.lines.join("")).not.toContain("secret value");
   });

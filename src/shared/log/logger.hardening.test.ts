@@ -1,9 +1,10 @@
 // Review-found leaks and crashes (P1.03): each case here was a real input that got through or took the logger down.
+
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
 import { createLogger, type LogFields, scrub } from "./index.ts";
 
 const dirs: string[] = [];

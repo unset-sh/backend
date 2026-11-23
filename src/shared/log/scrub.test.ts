@@ -1,6 +1,7 @@
 // Value scrubbing (P1.03; rule SE-7), split from logger.test.ts (P1.37o N2) with no test changed.
+
+import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
-import { describe, expect, test } from "vitest";
 import { scrub } from "./index.ts";
 import { EMAIL } from "./scrub.ts";
 
