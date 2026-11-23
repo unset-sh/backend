@@ -1,8 +1,8 @@
-import type { NetGuardCode, Policy, TxtResolver } from "@unset/infrastructure-net-guard";
-import { NetGuardError } from "@unset/infrastructure-net-guard";
-import { ConfigError } from "@unset/shared-config";
-import { describe, expect, test } from "vitest";
-import { createIdentityNetwork } from "./index.ts";
+import { describe, expect, test } from "bun:test";
+import { ConfigError } from "../../shared/config/index.ts";
+import type { NetGuardCode, Policy, TxtResolver } from "../egress/index.ts";
+import { NetGuardError } from "../egress/index.ts";
+import { createIdentityNetwork } from "./identity-network.ts";
 
 type Seen = { policy: string; url: string; headers: unknown; timeoutMs: unknown; maxBytes: unknown };
 

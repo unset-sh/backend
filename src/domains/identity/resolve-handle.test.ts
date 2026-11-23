@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import {
   type FetchRequest,
   type Handle,
@@ -39,14 +39,14 @@ function network(txt: TxtOutcome, https: HttpOutcome) {
 describe("resolveHandle", () => {
   test("dns_wins", async () => {
     const { net, calls } = network(records("v=spf1 -all", `did=${A}`), body(B));
-    expect(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "dns" });
+    expect<unknown>(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "dns" });
     expect(calls.txt).toEqual(["_atproto.alice.example.com"]);
     expect(calls.https).toEqual([]);
   });
 
   test("same_did_twice_is_one_did", async () => {
     const { net } = network(records(`did=${A}`, `did=${A}`), status(404));
-    expect(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "dns" });
+    expect<unknown>(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "dns" });
   });
 
   test("dns_conflict_fails", async () => {
@@ -59,17 +59,17 @@ describe("resolveHandle", () => {
 
   test("garbage_txt_is_ignored", async () => {
     const { net } = network(records("did=garbage", "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", ` did=${A}`), body(B));
-    expect(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: B, via: "https" });
+    expect<unknown>(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: B, via: "https" });
   });
 
   test("https_only", async () => {
     const { net } = network(NO_RECORD, body(A));
-    expect(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "https" });
+    expect<unknown>(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "https" });
   });
 
   test("https_found_while_dns_unavailable", async () => {
     const { net } = network(DNS_DOWN, body(A));
-    expect(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "https" });
+    expect<unknown>(await resolveHandle(net, HANDLE)).toEqual({ status: "found", did: A, via: "https" });
   });
 
   test("not_found", async () => {
@@ -99,8 +99,8 @@ describe("resolveHandle", () => {
         typeof text === "string" ? body(text) : { kind: "response", status: 200, body: text };
       return resolveHandle(network(NO_RECORD, outcome).net, HANDLE);
     };
-    expect(await via(`${A}\n`)).toEqual({ status: "found", did: A, via: "https" });
-    expect(await via(` \t${A}\r\n`)).toEqual({ status: "found", did: A, via: "https" });
+    expect<unknown>(await via(`${A}\n`)).toEqual({ status: "found", did: A, via: "https" });
+    expect<unknown>(await via(` \t${A}\r\n`)).toEqual({ status: "found", did: A, via: "https" });
     for (const bad of [`${A}\n${B}`, `<html>${A}</html>`, "", `did=${A}`, `${A} `]) {
       expect(await via(bad), bad).toEqual({ status: "not_found" });
     }
@@ -116,7 +116,7 @@ describe("resolveHandle", () => {
     // `_atproto.` adds 9 characters, and DNS names stop at 253 (atproto handle spec, "DNS TXT Method").
     const long = parseHandle(`${"a.".repeat(120)}example.com`) as Handle;
     const { net, calls } = network(records(`did=${A}`), body(B));
-    expect(await resolveHandle(net, long)).toEqual({ status: "found", did: B, via: "https" });
+    expect<unknown>(await resolveHandle(net, long)).toEqual({ status: "found", did: B, via: "https" });
     expect(calls.txt).toEqual([]);
   });
 });

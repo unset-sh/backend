@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import { isHandleSyntax, parseDid, parseHandle } from "./index.ts";
 
 describe("parseDid", () => {
@@ -9,7 +9,7 @@ describe("parseDid", () => {
       "did:web:example.com",
       "did:web:user.sub.example.com",
     ]) {
-      expect(parseDid(did)).toBe(did);
+      expect<unknown>(parseDid(did)).toBe(did);
     }
     for (const bad of [
       "",
@@ -64,9 +64,9 @@ describe("parseHandle", () => {
       ["a.b\u0000.com", null],
       [`${"a".repeat(64)}.com`, null],
     ];
-    for (const [raw, expected] of cases) expect(parseHandle(raw), raw).toBe(expected);
+    for (const [raw, expected] of cases) expect<unknown>(parseHandle(raw), raw).toBe(expected);
     const longest = `${"a.".repeat(121)}example.com`; // 253 characters
-    expect(parseHandle(longest)).toBe(longest);
+    expect<unknown>(parseHandle(longest)).toBe(longest);
     expect(parseHandle(`a${longest}`)).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import {
   createDidResolver,
   createHandleVerifier,
@@ -61,7 +61,7 @@ describe("verifyHandle", () => {
     const w = world();
     w.answers.txt["_atproto.alice.example.com"] = records(`did=${A}`);
     const verdict = await w.verifier().verifyHandle(A);
-    expect(verdict).toEqual({ status: "verified", handle: "alice.example.com", checkedAt: 1_000 });
+    expect<unknown>(verdict).toEqual({ status: "verified", handle: "alice.example.com", checkedAt: 1_000 });
     expect(displayHandle(verdict)).toBe("alice.example.com");
   });
 
@@ -164,7 +164,10 @@ describe("verifyHandle", () => {
     // it claims; a caller holding an older verified handle can then tell an outage from a changed claim.
     const w = world();
     w.answers.txt["_atproto.alice.example.com"] = { kind: "unavailable" };
-    expect(await w.verifier().verifyHandle(A)).toEqual({ status: "unavailable", claimed: "alice.example.com" });
+    expect<unknown>(await w.verifier().verifyHandle(A)).toEqual({
+      status: "unavailable",
+      claimed: "alice.example.com",
+    });
     // A DID document that could not be read claims nothing we know of.
     w.answers.plc = status(503);
     expect(await w.verifier().verifyHandle(A)).toEqual({ status: "unavailable" });
@@ -234,7 +237,7 @@ describe("verifyHandle", () => {
     expect(verify.verifiedHandle(A)).toBeNull();
     expect(w.calls.plc).toBe(0);
     await verify.verifyHandle(A);
-    expect(verify.verifiedHandle(A)).toBe("alice.example.com");
+    expect<unknown>(verify.verifiedHandle(A)).toBe("alice.example.com");
     w.clock.now += 600_000;
     expect(verify.verifiedHandle(A)).toBeNull();
     expect(w.calls.plc).toBe(1);

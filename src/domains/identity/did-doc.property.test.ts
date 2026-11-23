@@ -1,8 +1,9 @@
 // Property tests for the PDS endpoint a DID document names and for DID syntax (P1.36v, TE-6; verify-1131 N2). Sign-in
 // is decided by comparing the PDS origin read here with ours, so nothing but a bare https origin may come out, and no
 // string that is not a did:plc or a hostname-only did:web may pass as a DID.
+
+import { expect, test } from "bun:test";
 import fc from "fast-check";
-import { expect, test } from "vitest";
 import { parseDidDoc } from "./did-doc.ts";
 import { type Did, parseDid } from "./syntax.ts";
 
@@ -87,7 +88,7 @@ test("fuzz_parse_did_accepts_only_plc_or_hostname_web", () => {
     fc.property(didCandidate, (raw) => {
       const did = parseDid(raw);
       if (did === null) return;
-      expect(did).toBe(raw);
+      expect<unknown>(did).toBe(raw);
       expect(/^did:plc:[a-z2-7]{24}$/.test(did) || /^did:web:[a-z0-9.-]+$/.test(did), did).toBe(true);
     }),
     { numRuns: 10_000 },
@@ -98,7 +99,7 @@ test("fuzz_parse_did_accepts_every_plc", () => {
   const plc = fc.string({ unit: fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz234567"), minLength: 24, maxLength: 24 });
   fc.assert(
     fc.property(plc, (id) => {
-      expect(parseDid(`did:plc:${id}`)).toBe(`did:plc:${id}`);
+      expect<unknown>(parseDid(`did:plc:${id}`)).toBe(`did:plc:${id}`);
     }),
   );
 });

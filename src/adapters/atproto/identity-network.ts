@@ -1,7 +1,8 @@
 // The identity domain's network contract (P2.01a) on net-guard: did:plc documents under the fixed `plc` policy,
 // did:web documents and handle domains under `atproto`, TXT through net-guard's c-ares lookup (ADR 0013). Each
 // net-guard code becomes one of the domain's three failures; any other error is a programming error and is thrown.
-import type { FetchRequest, HttpOutcome, IdentityNetwork, TxtOutcome } from "@unset/domains-identity";
+import type { FetchRequest, HttpOutcome, IdentityNetwork, TxtOutcome } from "../../domains/identity/index.ts";
+import { ConfigError } from "../../shared/config/index.ts";
 import {
   atproto,
   type NetGuard,
@@ -10,8 +11,7 @@ import {
   plc,
   resolveTxt,
   type TxtOptions,
-} from "@unset/infrastructure-net-guard";
-import { ConfigError } from "@unset/shared-config";
+} from "../egress/index.ts";
 
 export type IdentityNetworkOptions = {
   readonly guard: NetGuard;

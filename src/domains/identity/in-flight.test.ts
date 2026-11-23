@@ -1,8 +1,9 @@
 // The in-flight map's sharing and write-ordering rules (P1.33r; architecture ruling
 // unset-plan/book-edits/2026-10-14-outside-review-lows.md, item 2, rules a, e and f; verify-864-3048c2f B1, S1, S2).
 // The resolver's tests cover the same rules through resolveDid. awaitFlight's rejection path: P1.35h.
+
+import { describe, expect, test } from "bun:test";
 import { getEventListeners } from "node:events";
-import { describe, expect, test } from "vitest";
 import { awaitFlight, createInFlight, type MayWrite } from "./in-flight.ts";
 import { IdentityError } from "./resolve-did.ts";
 
