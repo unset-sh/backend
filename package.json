@@ -1,0 +1,29 @@
+{
+  "name": "@unset-sh/backend",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Unset's product operations, service contracts and server implementation.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "biome ci . && depcruise --config .dependency-cruiser.cjs src scripts",
+    "format": "biome format --write .",
+    "test": "bun test",
+    "openapi": "bun scripts/openapi.ts",
+    "check": "bun run typecheck && bun run lint && bun run test && bun scripts/openapi.ts --check"
+  },
+  "dependencies": {
+    "@elysia/openapi": "1.4.17",
+    "elysia": "1.4.32"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@swc/core": "1.16.18",
+    "@types/bun": "1.4.4",
+    "dependency-cruiser": "18.7.2",
+    "typescript": "7.0.2",
+    "yaml": "2.9.1"
+  }
+}
