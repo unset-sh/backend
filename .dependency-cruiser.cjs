@@ -38,6 +38,14 @@ module.exports = {
       to: { path: "^node_modules/@types/bun/" },
     },
     {
+      name: "egress-home",
+      severity: "error",
+      comment:
+        "Outbound network built-ins live in the egress guard, so every caller-influenced request is vetted (plan §2 rule 13).",
+      from: { pathNot: "^src/adapters/egress/" },
+      to: { dependencyTypes: ["core"], path: "^(node:)?(dns|dns/promises|http|https|http2|tls|dgram)$" },
+    },
+    {
       name: "domain-no-io",
       severity: "error",
       comment: "A domain gets I/O through a port, never from a built-in.",
