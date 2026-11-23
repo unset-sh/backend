@@ -19,8 +19,10 @@ map with `npm run map`, and update this section in the same piece of work.
 
 ## Rules
 
-- This is a foundation, not a migrated application. The original `Undefined6799/unset` remains read-only for
-  this work. Do not infer permission to copy its code or retire its security controls.
+- The original `Undefined6799/unset` stays read-only. Alex, 2026-11-23: reuse its code wherever it fits rather
+  than reinvent it ("the idea is to reuse as much code as possible while doing that migration"). Copy the
+  files and tests a change needs, change only what the move requires in a separate commit, cite the source
+  path and commit, and note weak spots in agent-kit. Never copy a security weakness or retire a security control.
 - Model product capabilities first. Keep provider types and errors inside adapters; domain imports must not
   depend on server frameworks or infrastructure. Wire known dependencies explicitly in each process.
 - Keep public API contracts, private domain ports and client UI interfaces distinct. Choose the public schema
