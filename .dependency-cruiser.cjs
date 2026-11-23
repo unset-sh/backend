@@ -56,8 +56,15 @@ module.exports = {
       name: "domain-no-vendor",
       severity: "error",
       comment: "A domain imports no package; vendor types stay inside their adapter.",
-      from: { path: "^src/domains/" },
+      from: { path: "^src/domains/", pathNot: "\\.test\\.ts$" },
       to: { dependencyTypes: ["npm", "npm-dev", "npm-peer", "npm-optional"] },
+    },
+    {
+      name: "domain-test-dev-only",
+      severity: "error",
+      comment: "A domain's tests may use test tools (dev dependencies, such as fast-check), never a runtime package.",
+      from: { path: "^src/domains/.*\\.test\\.ts$" },
+      to: { dependencyTypes: ["npm", "npm-peer", "npm-optional"] },
     },
     {
       name: "domain-inward-only",
