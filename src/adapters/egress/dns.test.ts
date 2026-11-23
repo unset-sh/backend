@@ -1,5 +1,12 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { NetGuardError, resolveTxt, type TxtResolver } from "../index.ts";
+import { afterEach, describe, expect, jest, test } from "bun:test";
+import { NetGuardError, resolveTxt, type TxtResolver } from "./index.ts";
+
+/** Vitest's advanceTimersByTimeAsync: let pending promises run, move the fake clock, then let them run again. */
+async function advance(ms: number): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  jest.advanceTimersByTime(ms);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
 
 /** A stub resolver (DNS is an unmanaged dependency, TE-1) recording what it was built with and asked. */
 function stub(answer: () => Promise<string[][]>) {
@@ -36,7 +43,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 }
 
 afterEach(() => {
-  vi.useRealTimers();
+  jest.useRealTimers();
 });
 
 describe("resolveTxt", () => {
@@ -52,12 +59,12 @@ describe("resolveTxt", () => {
   });
 
   test("resolve_txt_timeout", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     const { createResolver, seen } = stub(() => new Promise(() => undefined));
     const result = codeOf(resolveTxt("_atproto.slow.example", { timeoutMs: 2_000, createResolver }));
-    await vi.advanceTimersByTimeAsync(1_999);
+    await advance(1_999);
     expect(seen.cancelled).toBe(0);
-    await vi.advanceTimersByTimeAsync(1);
+    await advance(1);
     expect(await result).toBe("egress.dns_timeout");
     expect(seen.cancelled).toBe(1);
   });

@@ -1,18 +1,16 @@
 // Request body caps (ADR 0070 point 8): every policy sends at most 1 MiB unless it names more, and only three do, each
 // for one call or one internal origin. Each cap is tested with what normal use sends (it fits) and one byte past it.
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { libraryFetch } from "./libraryFetch.ts";
 import {
   atproto,
   atprotoBlobUpload,
   DEFAULT_REQUEST_BYTES,
   internalPolicy,
-  objectStore,
+  PICTURE_HOP_BYTES,
   type Policy,
-  pdsAdmin,
   plc,
   REQUEST_BODY_CEILING,
-  review,
 } from "./policies.ts";
 import {
   type FakeServer,
@@ -76,13 +74,18 @@ async function send(policy: Policy, url: string, bytes: number): Promise<string>
 describe("request body caps", () => {
   test("caps.default_unchanged: every other policy still sends at most 1 MiB", async () => {
     expect(DEFAULT_REQUEST_BYTES).toBe(MiB);
-    for (const policy of [atproto, plc, pdsAdmin("http://pds-admin:8080")]) expect(policy.requestBytes).toBeUndefined();
-    expect(await send(pdsAdmin("http://pds-admin:8080"), "http://pds-admin:8080/x", MiB)).toBe("sent");
-    expect(await send(pdsAdmin("http://pds-admin:8080"), "http://pds-admin:8080/x", MiB + 1)).toBe("egress.too_large");
+    for (const policy of [atproto, plc, internalPolicy("pds-admin", ["http://pds-admin:8080"])])
+      expect(policy.requestBytes).toBeUndefined();
+    expect(await send(internalPolicy("pds-admin", ["http://pds-admin:8080"]), "http://pds-admin:8080/x", MiB)).toBe(
+      "sent",
+    );
+    expect(await send(internalPolicy("pds-admin", ["http://pds-admin:8080"]), "http://pds-admin:8080/x", MiB + 1)).toBe(
+      "egress.too_large",
+    );
   });
 
   test("caps.review: a 60,000,000-byte upload reaches review; past 66 MiB is refused (ADR 0076)", async () => {
-    const policy = review("http://review:8080");
+    const policy = internalPolicy("review", ["http://review:8080"], REQUEST_BODY_CEILING);
     expect(policy).toEqual({
       name: "review",
       kind: "internal",
@@ -95,7 +98,7 @@ describe("request body caps", () => {
   });
 
   test("caps.object_store: a 5,000,000-byte main version is stored; past 5 MiB is refused (ADR 0088)", async () => {
-    const policy = objectStore("http://objects:8333");
+    const policy = internalPolicy("object-store", ["http://objects:8333"], PICTURE_HOP_BYTES);
     expect(policy.requestBytes).toBe(5 * MiB);
     expect(await send(policy, "http://objects:8333/unset-private/drafts/k", 5_000_000)).toBe("sent");
     expect(await send(policy, "http://objects:8333/unset-private/drafts/k", 5 * MiB + 1)).toBe("egress.too_large");

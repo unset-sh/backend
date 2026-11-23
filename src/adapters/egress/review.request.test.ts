@@ -1,9 +1,10 @@
 // Review-found gaps in the guarded request (P1.18a): Host and SNI, header precedence, raw-byte caps, null bodies,
 // real pinning, error mapping and the event shape. Each test reproduces a reviewer probe.
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { IncomingMessage } from "node:http";
 import type { TLSSocket } from "node:tls";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { atproto, plc } from "./policies.ts";
 import {
   type FakeServer,

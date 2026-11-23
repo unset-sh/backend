@@ -1,6 +1,6 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { gzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { atproto, localPlc, objectStore, type Policy, pdsAdmin, plc } from "./policies.ts";
+import { atproto, internalPolicy, localPlc, PICTURE_HOP_BYTES, type Policy, plc } from "./policies.ts";
 import { fakeResolver, type Handler, httpServer, httpsServer, loopbackDial, testCertificate } from "./remote.fake.ts";
 import { createNetGuardWith, type EgressEvent } from "./request.ts";
 import { NetGuardError } from "./resolve.ts";
@@ -204,7 +204,7 @@ describe("guardedRequest", () => {
   test("object_store_policy_exact_origin", async () => {
     // P2.18k: the object store by the one origin the composition root passes in (OBJECT_STORE_URL), nothing wider.
     handler = (_req, res) => res.end("ok");
-    const policy = objectStore("http://objects:8333");
+    const policy = internalPolicy("object-store", ["http://objects:8333"], PICTURE_HOP_BYTES);
     expect(policy).toMatchObject({ name: "object-store", kind: "internal", origins: ["http://objects:8333"] });
     const ok = guardFor({ objects: ["172.20.0.9"] }, servers.http.port);
     expect((await ok.guard.request(policy, { url: "http://objects:8333/unset-private/drafts/x" })).status).toBe(200);
@@ -212,21 +212,25 @@ describe("guardedRequest", () => {
     for (const url of ["http://objects:8334/", "http://db:8333/", "https://objects:8333/", "http://172.20.0.9:8333/"]) {
       expect(await codeOf(other.guard.request(policy, { url })), url).toBe("egress.host_not_allowed");
     }
-    expect(() => objectStore("http://objects:8333/bucket")).toThrow(TypeError);
-    expect(() => objectStore("")).toThrow(TypeError);
+    expect(() => internalPolicy("object-store", ["http://objects:8333/bucket"], PICTURE_HOP_BYTES)).toThrow(TypeError);
+    expect(() => internalPolicy("object-store", [""], PICTURE_HOP_BYTES)).toThrow(TypeError);
   });
 
   test("object_store_policy_private_only", async () => {
     const bad = guardFor({ objects: [PUBLIC] }, servers.http.port);
-    expect(await codeOf(bad.guard.request(objectStore("http://objects:8333"), { url: "http://objects:8333/" }))).toBe(
-      "egress.private_address",
-    );
+    expect(
+      await codeOf(
+        bad.guard.request(internalPolicy("object-store", ["http://objects:8333"], PICTURE_HOP_BYTES), {
+          url: "http://objects:8333/",
+        }),
+      ),
+    ).toBe("egress.private_address");
   });
 
   test("pds_admin_policy_exact_origin", async () => {
     // P2.09k: web reaches pds-admin by the one origin its composition root passes in (PDS_ADMIN_URL), nothing wider.
     handler = (_req, res) => res.end("ok");
-    const policy = pdsAdmin("http://pds-admin:8080");
+    const policy = internalPolicy("pds-admin", ["http://pds-admin:8080"]);
     expect(policy).toEqual({ name: "pds-admin", kind: "internal", origins: ["http://pds-admin:8080"] });
     const ok = guardFor({ "pds-admin": ["172.20.0.11"] }, servers.http.port);
     expect((await ok.guard.request(policy, { url: "http://pds-admin:8080/v1/invite.issue" })).status).toBe(200);
@@ -239,13 +243,13 @@ describe("guardedRequest", () => {
     ]) {
       expect(await codeOf(other.guard.request(policy, { url })), url).toBe("egress.host_not_allowed");
     }
-    expect(() => pdsAdmin("http://pds-admin:8080/v1")).toThrow(TypeError);
-    expect(() => pdsAdmin("")).toThrow(TypeError);
+    expect(() => internalPolicy("pds-admin", ["http://pds-admin:8080/v1"])).toThrow(TypeError);
+    expect(() => internalPolicy("pds-admin", [""])).toThrow(TypeError);
   });
 
   test("pds_admin_policy_private_only", async () => {
     const bad = guardFor({ "pds-admin": [PUBLIC] }, servers.http.port);
-    const policy = pdsAdmin("http://pds-admin:8080");
+    const policy = internalPolicy("pds-admin", ["http://pds-admin:8080"]);
     expect(await codeOf(bad.guard.request(policy, { url: "http://pds-admin:8080/" }))).toBe("egress.private_address");
   });
 
@@ -260,7 +264,7 @@ describe("guardedRequest", () => {
         res.end();
       });
     };
-    const policy = objectStore("http://objects:8333");
+    const policy = internalPolicy("object-store", ["http://objects:8333"], PICTURE_HOP_BYTES);
     const ok = guardFor({ objects: ["172.20.0.9"] }, servers.http.port);
     const put = { url: "http://objects:8333/b/k", method: "PUT", body: new TextEncoder().encode("bytes") } as const;
     expect((await ok.guard.request(policy, put)).status).toBe(200);

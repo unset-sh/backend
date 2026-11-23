@@ -1,6 +1,6 @@
 // Review-found gaps in the guarded request (P1.18a): the dev loopback flag, limit bounds, internal policy origins,
 // events for early refusals and TLS failures.
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { atproto, internalPolicy, plc } from "./policies.ts";
 import {
   type FakeServer,

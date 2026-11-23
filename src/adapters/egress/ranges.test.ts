@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { classifyAddress } from "../index.ts";
+import { describe, expect, test } from "bun:test";
+import { classifyAddress } from "./index.ts";
 import { RANGES } from "./ranges.ts";
 
 /** The first address of a CIDR block, and one inside it past the first. */

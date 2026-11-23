@@ -7,7 +7,7 @@ import { createServer as createHttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type LookupAnswer, pinnedLookup } from "./resolve.ts";
+import type { LookupAnswer } from "./resolve.ts";
 
 const TEST_HOSTS = ["unset.ac", "bsky.social", "plc.directory", "pds.example", "files.example"];
 
@@ -75,8 +75,8 @@ export function fakeResolver(answers: Record<string, readonly string[]>) {
 }
 
 /**
- * Socket hooks that keep the pinning visible: the guard's own pinnedLookup chooses the address, the hook records it,
- * then sends the socket to the fake server on loopback instead of the (fake) public address.
+ * A dial hook that keeps the pinning visible: the guard picks each vetted address in order, the hook records it, then
+ * sends the connection to the fake server on loopback instead of the (fake) public address. Name, Host and SNI stay.
  */
 export function loopbackDial(port: number) {
   const dialled: string[] = [];
@@ -84,16 +84,9 @@ export function loopbackDial(port: number) {
     dialled,
     hooks: {
       port,
-      lookupFor: (addresses: readonly string[]) => {
-        const pinned = pinnedLookup(addresses);
-        return (host: string, options: unknown, callback: (e: Error | null, a?: unknown, f?: number) => void) =>
-          pinned(host, options, (error, address) => {
-            if (error) return callback(error);
-            const first = Array.isArray(address) ? address[0]?.address : address;
-            dialled.push(String(first));
-            if (Array.isArray(address)) callback(null, [{ address: "127.0.0.1", family: 4 }]);
-            else callback(null, "127.0.0.1", 4);
-          });
+      dial: (address: string) => {
+        dialled.push(address);
+        return "127.0.0.1";
       },
     },
   };

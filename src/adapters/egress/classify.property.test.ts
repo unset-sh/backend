@@ -1,7 +1,8 @@
 // Property tests for the classifier (rule TE-6, architecture ruling 2026-10-04). The exhaustive sweep in
 // review.test.ts covers well-formed addresses; these feed the unusual spellings SSRF bypasses use.
+
+import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
-import { describe, expect, test } from "vitest";
 import { classifyAddress } from "./classify.ts";
 
 const octet = fc.integer({ min: 0, max: 255 });

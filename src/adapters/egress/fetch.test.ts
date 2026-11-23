@@ -1,8 +1,8 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TLSSocket } from "node:tls";
 import { gzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { guardedFetch, libraryFetch } from "./libraryFetch.ts";
 import { atproto, plc } from "./policies.ts";
 import {
@@ -145,7 +145,7 @@ describe("guardedFetch", () => {
     const { fetch } = fetchFor();
     await expect(fetch("https://plc.directory/", { headers: { host: "unset.ac" } })).rejects.toThrow(TypeError);
     expect(await (await fetch("https://plc.directory/")).text()).toBe("plc.directory");
-    expect(sni).toBe("plc.directory");
+    expect(sni as string | false | null).toBe("plc.directory");
   });
 
   test("only_get_and_post", async () => {

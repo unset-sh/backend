@@ -1,10 +1,17 @@
-// The fetch shape for libraries that take a custom fetch (P1.18a): @atproto/oauth-client-node, identity resolvers.
-// Built on the guarded request, so policy, pinning, the no-redirect rule and the decompression cap all apply; undici's
-// own fetch would follow redirects and decompress by itself.
-import { atproto, atprotoBlobUpload, OBJECT_STORE_BYTES, objectStore, type Policy } from "./policies.ts";
+// The fetch shape for libraries that take a custom fetch (P1.18a): @atproto/oauth-client, identity resolvers. Built
+// on the guarded request, so policy, pinning, the no-redirect rule and the decompression cap all apply; a plain fetch
+// would follow redirects and decompress by itself.
+import { atproto, atprotoBlobUpload, type Policy } from "./policies.ts";
 import { type GuardedRequest, type GuardedResponse, type NetGuard, NULL_BODY_STATUSES } from "./request.ts";
 
 export type FetchDefaults = { timeoutMs?: number; maxBytes?: number; accept?: readonly string[] };
+
+/** WHATWG fetch as libraries call it; Bun's `typeof fetch` adds `preconnect`, which no library here needs. */
+export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/** One Request from fetch's arguments (Bun's typings take a string or URL and a Request in separate overloads). */
+const toRequest = (input: string | URL | Request, init?: RequestInit): Request =>
+  input instanceof Request ? new Request(input, init) : new Request(String(input), init);
 
 function toResponse(result: GuardedResponse): Response {
   const headers = new Headers();
@@ -21,9 +28,9 @@ function toResponse(result: GuardedResponse): Response {
  * A WHATWG fetch through `guard`. The caller's `redirect` option is ignored: a redirect is always refused. The method,
  * headers (a `host` header included) and the policy's body cap are checked by the guard, so each refusal is reported.
  */
-export function guardedFetch(guard: NetGuard, policy: Policy, defaults: FetchDefaults = {}): typeof fetch {
+export function guardedFetch(guard: NetGuard, policy: Policy, defaults: FetchDefaults = {}): Fetch {
   return async (input, init) => {
-    const req = new Request(input, init);
+    const req = toRequest(input, init);
     const headers: Record<string, string> = Object.fromEntries(req.headers);
     const options: GuardedRequest = {
       url: req.url,
@@ -46,26 +53,14 @@ const BLOB_UPLOAD_PATH = "/xrpc/com.atproto.repo.uploadBlob";
  * The one fetch handed to atproto libraries (P2.04); our own PDS is reached through the guard's internal hosts. A POST
  * to uploadBlob goes under atprotoBlobUpload, whose body may reach 5 MiB; every other request keeps atproto's 1 MiB.
  */
-export function libraryFetch(guard: NetGuard): typeof fetch {
+export function libraryFetch(guard: NetGuard): Fetch {
   const defaults = { timeoutMs: 10_000, maxBytes: 1024 * 1024 };
   const plain = guardedFetch(guard, atproto, defaults);
   const upload = guardedFetch(guard, atprotoBlobUpload, defaults);
   return (input, init) => {
-    const req = new Request(input, init);
+    const req = toRequest(input, init);
     return req.method === "POST" && URL.canParse(req.url) && new URL(req.url).pathname === BLOB_UPLOAD_PATH
       ? upload(req)
       : plain(req);
   };
-}
-
-/**
- * The one fetch a process reaches the object store with (ADR 0088): its policy, and an answer cap equal to its put cap,
- * so a version that could be stored can be read back. Without it the guard's default 1 MiB answer cap applied, and
- * a main version past 1,048,576 bytes failed at web's publish step.
- */
-export function objectStoreFetch(guard: NetGuard, origin: string, timeoutMs?: number): typeof fetch {
-  return guardedFetch(guard, objectStore(origin), {
-    maxBytes: OBJECT_STORE_BYTES,
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-  });
 }

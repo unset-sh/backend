@@ -1,12 +1,16 @@
 // Guarded outbound requests (P1.18a). Every caller-influenced HTTP request names a policy, connects only to
 // addresses vetted by resolveVetted, never follows a redirect, and is capped in time, bytes and decompressed bytes.
+// On Bun the connection is Bun's fetch to the vetted address itself, with the name kept for Host, SNI and the
+// certificate check (Bun 1.4.4 docs/runtime/networking/fetch.mdx, "Connecting to a specific address"). The old app's
+// undici Agent and pinned lookup are not used: Bun replaces undici with a shim whose connect hooks did nothing before
+// oven-sh/bun PR 38855, so a guard built on them would silently stop guarding (org-0015).
 import { isIP } from "node:net";
-import { pipeline, type Readable, Transform } from "node:stream";
+import { pipeline, Readable, Transform } from "node:stream";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
-import { Agent, buildConnector, type Dispatcher, request as undiciRequest } from "undici";
 import { classifyAddress, isInternalName, normaliseHost } from "./classify.ts";
 import { type Policy, requestCap } from "./policies.ts";
-import { type LookupAnswer, type NetGuardCode, NetGuardError, pinnedLookup, resolveVettedWith } from "./resolve.ts";
+import { type LookupAnswer, type NetGuardCode, NetGuardError, resolveVettedWith } from "./resolve.ts";
 
 /** What the composition root passes in (parsed by shared/config netGuardFields, plus wiring). */
 export type NetGuardSettings = {
@@ -14,7 +18,7 @@ export type NetGuardSettings = {
   readonly allowLoopback: boolean;
   /** Build commit, sent as `user-agent: unset.sh/<commit>`. */
   readonly commit: string;
-  /** Trusted CA certificates (PEM). When set they replace Node's default trust store; when absent it is used. */
+  /** Trusted CA certificates (PEM). When set they replace the default trust store; when absent it is used. */
   readonly ca?: string | readonly string[];
   /** Called once per request. It never receives the host, URL or address, so none can reach a log. */
   readonly onRequest?: (event: EgressEvent) => void;
@@ -51,7 +55,8 @@ export type GuardedResponse = { status: number; headers: Record<string, string |
 /** Test seams, not exported from the package: the resolver stub and where sockets land. Vetting still runs. */
 export type NetGuardHooks = {
   lookup?: (host: string) => Promise<LookupAnswer>;
-  lookupFor?: (addresses: readonly string[]) => unknown;
+  /** Given each vetted address the guard is about to dial, the address to dial instead (a fake server on loopback). */
+  dial?: (address: string) => string;
   port?: number;
 };
 
@@ -86,8 +91,8 @@ function checkRequest(policy: Policy, req: GuardedRequest): Limits {
 
 /**
  * The caller's headers with keys lowercased, then ours, which win: the user agent names us, and we decode only what
- * we advertise. A caller `host` header is refused, in any case: undici (8.12.2, lib/core/request.js processHeader)
- * would send it as Host and take the TLS server name from it, so the certificate would be checked against it.
+ * we advertise. A caller `host` header is refused, in any case: the guard sets Host itself to the name it vetted, and
+ * a caller's would name another origin than the one the certificate is checked for.
  */
 function requestHeaders(headers: Record<string, string> = {}, commit: string): Record<string, string> {
   const lowered = Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value] as const);
@@ -212,21 +217,34 @@ async function readCapped(body: Readable, encoding: string, maxBytes: number): P
   }
 }
 
+/** Response headers as a record with lowercase names; `set-cookie` keeps each value (WHATWG Headers getSetCookie). */
+function headersOf(response: Response): GuardedResponse["headers"] {
+  const headers: GuardedResponse["headers"] = {};
+  for (const [name, value] of response.headers) if (name !== "set-cookie") headers[name] = value;
+  const cookies = response.headers.getSetCookie();
+  if (cookies.length > 0) headers["set-cookie"] = cookies;
+  return headers;
+}
+
 /** The response checks, in order, then the body. A status outside 200 to 599 is not a final HTTP response. */
-async function readBody(response: Dispatcher.ResponseData, req: GuardedRequest, maxBytes: number) {
-  const { statusCode: status, headers, body } = response;
+async function readBody(response: Response, req: GuardedRequest, maxBytes: number) {
+  const { status } = response;
+  const headers = headersOf(response);
+  const body = response.body
+    ? Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>)
+    : Readable.from([]);
   if (status < 200 || status > 599) refuse(body, "egress.connect");
   if (REDIRECTS.has(status)) refuse(body, "egress.redirect"); // never followed: the caller decides
   if (NULL_BODY_STATUSES.has(status) || headers["content-length"] === "0") {
     discard(body); // nothing to type-check or decode, whatever content-encoding claims
-    return new Uint8Array();
+    return { status, headers, body: new Uint8Array() };
   }
   if (req.accept && !req.accept.includes(mediaType(headers["content-type"]))) refuse(body, "egress.content_type");
   if (Number(headers["content-length"] ?? 0) > maxBytes) refuse(body, "egress.too_large");
   const encoding = String(headers["content-encoding"] ?? "")
     .trim()
     .toLowerCase();
-  return readCapped(body, encoding, maxBytes);
+  return { status, headers, body: await readCapped(body, encoding, maxBytes) };
 }
 
 /** A socket or TLS failure as a NetGuardError; an abort (deadline or caller) is `egress.timeout`, during DNS too. */
@@ -243,28 +261,46 @@ function egressError(error: unknown, signal: AbortSignal): NetGuardError {
     : new NetGuardError("egress.connect");
 }
 
+/** An address in a URL's host: IPv6 in brackets (RFC 3986 3.2.2). */
+const urlHost = (address: string): string => (isIP(address) === 6 ? `[${address}]` : address);
+
 /**
- * The connector: pinned lookup, connect timeout, and the server name the certificate is checked against. An IP
- * literal gets no server name (RFC 6066 §3 forbids one; Node refuses it), so its certificate must name the address.
- * undici 8.12.2 has no typed per-request server name; this one applies because no host header reaches undici
- * (lib/core/connect.js:83 prefers the request's, derived from that header).
+ * One request to one vetted address: the URL names the address, so Bun dials it and resolves nothing; `Host` and
+ * `tls.serverName` name the host, so SNI and the certificate check use the name. An IP literal gets no server name
+ * (RFC 6066 3 forbids one), so its certificate must name the address. `proxy: false`, or Bun would judge the
+ * environment's proxy against the address. `decompress: false`, so readCapped counts and decodes the bytes itself.
+ * `keepalive: false`: no connection outlives the request it was vetted for.
  */
-function connectorFor(
-  addresses: readonly string[],
+function dialOnce(
+  address: string,
+  url: URL,
   host: string,
-  timeoutMs: number,
+  req: GuardedRequest,
+  prepared: Prepared,
+  signal: AbortSignal,
   settings: NetGuardSettings,
   hooks: NetGuardHooks,
-) {
-  const lookup = (hooks.lookupFor ?? pinnedLookup)(addresses);
-  const base = buildConnector({
-    lookup: lookup as never,
-    timeout: Math.min(CONNECT_TIMEOUT_MS, timeoutMs),
-    ...(isIP(host) === 0 ? { servername: host } : {}),
-    ...(settings.ca === undefined ? {} : { ca: settings.ca as string | string[] }),
-  });
-  return (options: Parameters<typeof base>[0], callback: Parameters<typeof base>[1]) =>
-    base(hooks.port === undefined ? options : { ...options, port: String(hooks.port) }, callback);
+): Promise<Response> {
+  const target = new URL(url);
+  target.hostname = urlHost(hooks.dial ? hooks.dial(address) : address);
+  if (hooks.port !== undefined) target.port = String(hooks.port);
+  const hostHeader = url.port === "" ? urlHost(host) : `${urlHost(host)}:${url.port}`;
+  const ca = settings.ca === undefined ? {} : { ca: settings.ca as string | string[] };
+  const tls =
+    url.protocol === "https:"
+      ? { tls: { rejectUnauthorized: true, ...(isIP(host) === 0 ? { serverName: host } : {}), ...ca } }
+      : {};
+  return fetch(target, {
+    method: req.method ?? "GET",
+    headers: { ...prepared.headers, host: hostHeader },
+    ...(prepared.body ? { body: prepared.body } : {}),
+    signal,
+    redirect: "manual",
+    proxy: false,
+    decompress: false,
+    keepalive: false,
+    ...tls,
+  } as BunFetchRequestInit);
 }
 
 type Prepared = { limits: Limits; headers: Record<string, string>; body: Uint8Array | undefined };
@@ -292,22 +328,35 @@ async function exchange(
   if (target.loopbackOnly && !addresses.every((a) => classifyAddress(a) === "loopback")) {
     throw new NetGuardError("egress.private_address");
   }
-  const agent = new Agent({ connect: connectorFor(addresses, target.host, limits.timeoutMs, settings, hooks) });
-  try {
-    const response = await undiciRequest(req.url, {
-      dispatcher: agent,
-      method: req.method ?? "GET",
-      headers: prepared.headers,
-      ...(prepared.body ? { body: prepared.body } : {}),
-      signal,
-    });
-    seen.status = response.statusCode;
-    const body = await readBody(response, req, limits.maxBytes);
-    seen.bytes = body.length;
-    return { status: response.statusCode, headers: response.headers as GuardedResponse["headers"], body };
-  } finally {
-    await agent.destroy().catch(() => undefined);
+  const url = new URL(req.url);
+  // Every vetted address in resolver order until one connects (Bun's fetch has no fallback for a dialled address,
+  // docs/runtime/networking/fetch.mdx); a TLS failure or an abort ends the attempt, since another address of the
+  // same name would present the same certificate.
+  let response: Response | undefined;
+  let lastError: unknown;
+  for (const [index, address] of addresses.entries()) {
+    // Bun's fetch has no connect timeout of its own, so while another address is left an address gets
+    // CONNECT_TIMEOUT_MS to answer with headers before the next is tried; the last one has the whole deadline.
+    const attempt = new AbortController();
+    const timer = index < addresses.length - 1 ? setTimeout(() => attempt.abort(), CONNECT_TIMEOUT_MS) : undefined;
+    try {
+      const both = AbortSignal.any([signal, attempt.signal]);
+      response = await dialOnce(address, url, target.host, req, prepared, both, settings, hooks);
+      break;
+    } catch (error) {
+      lastError = error;
+      const slow = attempt.signal.aborted && !signal.aborted;
+      if (!slow && (signal.aborted || egressError(error, signal).code !== "egress.connect")) throw error;
+      if (slow) lastError = new NetGuardError("egress.connect");
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  if (response === undefined) throw lastError;
+  seen.status = response.status;
+  const read = await readBody(response, req, limits.maxBytes);
+  seen.bytes = read.body.length;
+  return read;
 }
 
 /** Every step in order: the request's own checks, then target, body and exchange under one deadline. */

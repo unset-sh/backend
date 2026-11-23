@@ -1,12 +1,12 @@
 // Review-found gaps (P1.18): expected classes written out by hand, so deleting or narrowing a table row turns a test
 // red, plus the resolver and lookup cases a review proved by running code.
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { classifyAddress, isInternalName, NetGuardError, pinnedLookup } from "../index.ts";
+import { afterEach, describe, expect, jest, test } from "bun:test";
+import { classifyAddress, isInternalName, NetGuardError } from "./index.ts";
 // The seamed entry: these cases stub the resolver, which the package entry no longer accepts (P2.01m).
 import { resolveVettedWith as resolveVetted } from "./resolve.ts";
 
 afterEach(() => {
-  vi.useRealTimers();
+  jest.useRealTimers();
 });
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
@@ -86,7 +86,7 @@ const EXPECTED: readonly (readonly [string, string])[] = [
 
 describe("classification by hand-written expectations", () => {
   test.each(EXPECTED)("%s is %s", (ip, cls) => {
-    expect(classifyAddress(ip)).toBe(cls);
+    expect(classifyAddress(ip) as string).toBe(cls);
   });
 
   test.each([
@@ -112,9 +112,9 @@ describe("classification by hand-written expectations", () => {
       const hex = `${(n >>> 16).toString(16)}:${(n & 0xffff).toString(16)}`;
       const cls = classifyAddress(v4);
       if (classifyAddress(`::ffff:${v4}`) !== cls || classifyAddress(`0:0:0:0:0:FFFF:${hex}`) !== cls) {
-        expect.fail(`${v4} classifies differently in mapped form`);
+        throw new Error(`${v4} classifies differently in mapped form`);
       }
-      if (classifyAddress(`[64:ff9b::${hex}]`) !== cls) expect.fail(`${v4} classifies differently in NAT64 form`);
+      if (classifyAddress(`[64:ff9b::${hex}]`) !== cls) throw new Error(`${v4} classifies differently in NAT64 form`);
     }
   });
 
@@ -149,14 +149,14 @@ describe("names", () => {
 
 describe("resolveVetted review cases", () => {
   test("sync_throwing_lookup_is_dns_failed", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     const throwing = (): Promise<never> => {
       throw new TypeError("ERR_INVALID_ARG_VALUE");
     };
     expect(await codeOf(resolveVetted("bad.example", { allow: "public" }, { lookup: throwing }))).toBe(
       "egress.dns_failed",
     );
-    expect(vi.getTimerCount()).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   test("hosts_with_controls_or_spaces_refused", async () => {
@@ -172,13 +172,13 @@ describe("resolveVetted review cases", () => {
   });
 
   test("no_timer_left_after_answer", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     await resolveVetted(
       "one.example",
       { allow: "public" },
       { lookup: async () => [{ address: "1.1.1.1", family: 4 }] },
     );
-    expect(vi.getTimerCount()).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   test("private_mode_refuses_translated_forms", async () => {
@@ -211,19 +211,5 @@ describe("resolveVetted review cases", () => {
     expect(await codeOf(resolveVetted("1.1.1.1", { allow: "public" }, { signal: AbortSignal.abort() }))).toBe(
       "egress.dns_timeout",
     );
-  });
-});
-
-describe("pinnedLookup review cases", () => {
-  test("all_with_unmatched_family_is_not_found", () => {
-    const got: unknown[] = [];
-    pinnedLookup(["93.184.215.14"])("x", { all: true, family: 6 }, (...args) => got.push(...args));
-    expect(got[0]).toBeInstanceOf(Error);
-  });
-
-  test("two_argument_form", () => {
-    const got: unknown[] = [];
-    pinnedLookup(["93.184.215.14"])("x", (...args: unknown[]) => got.push(...args));
-    expect(got).toEqual([null, "93.184.215.14", 4]);
   });
 });

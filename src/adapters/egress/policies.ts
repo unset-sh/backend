@@ -79,28 +79,3 @@ export function internalPolicy(name: string, origins: readonly string[], request
  * composition root selects it, which P1.34z allows only under UNSET_ENV=local.
  */
 export const localPlc: Policy = internalPolicy("plc", ["http://plc:2582"]);
-
-/** What one object-store call may send or bring back: a picture's main version (ADR 0088). */
-export const OBJECT_STORE_BYTES = PICTURE_HOP_BYTES;
-
-/**
- * The private object store (P2.18k; plan §5.8 drafts store): one exact internal origin, the `OBJECT_STORE_URL` the
- * calling process's composition root passes in, so its answers must be private and no other host or port is reachable.
- * A put may carry up to 5 MiB, room for a picture's 5,000,000-byte main version (ADR 0070 point 2.4, ADR 0088). Reach
- * it through `objectStoreFetch`, which caps the answer the same.
- */
-export const objectStore = (origin: string): Policy => internalPolicy("object-store", [origin], OBJECT_STORE_BYTES);
-
-/**
- * The review process (ADR 0070 point 2.2): web's one call with a member's upload, by the `REVIEW_URL` web's composition
- * root passes in. Private answers only; a body of up to 66 MiB, above review's own job ceiling (infrastructure/image
- * wire.ts JOB_CEILING, 64 MiB), for an upload of at most 64 MiB (ADR 0076).
- */
-export const review = (origin: string): Policy => internalPolicy("review", [origin], REQUEST_BODY_CEILING);
-
-/**
- * pds-admin (P2.09k; plan §5.2): the one internal service that holds the PDS admin password. `web` reaches it by one
- * exact origin, the `PDS_ADMIN_URL` its composition root passes in, so answers must be private and nothing else is
- * reachable under this policy.
- */
-export const pdsAdmin = (origin: string): Policy => internalPolicy("pds-admin", [origin]);

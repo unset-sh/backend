@@ -1,8 +1,15 @@
+import { afterEach, describe, expect, jest, test, vi } from "bun:test";
 import { Resolver } from "node:dns/promises";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { NetGuardError, pinnedLookup, resolveVetted as resolvePublicEntry } from "../index.ts";
+import { NetGuardError, resolveVetted as resolvePublicEntry } from "./index.ts";
 // The seamed entry: most cases stub the resolver, which the package entry does not accept (P2.01m).
 import { type AddressResolver, resolveVettedWith as resolveVetted } from "./resolve.ts";
+
+/** Vitest's advanceTimersByTimeAsync: let pending promises run, move the fake clock, then let them run again. */
+async function advance(ms: number): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  jest.advanceTimersByTime(ms);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
 
 type Answer = { address: string; family: number }[];
 const answering = (...addresses: string[]) => {
@@ -25,7 +32,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 }
 
 afterEach(() => {
-  vi.useRealTimers();
+  jest.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -73,29 +80,29 @@ describe("resolveVetted", () => {
   });
 
   test("dns_timeout", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     const never = () => new Promise<Answer>(() => undefined);
     const result = codeOf(resolveVetted("slow.example", { allow: "public" }, { lookup: never }));
-    await vi.advanceTimersByTimeAsync(2_999);
+    await advance(2_999);
     let settled = false;
     void result.then(() => {
       settled = true;
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
+    await advance(1);
     expect(await result).toBe("egress.dns_timeout");
   });
 
   test("late_answer_ignored_after_timeout", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     let answer: (a: Answer) => void = () => undefined;
     const late = () =>
       new Promise<Answer>((resolve) => {
         answer = resolve;
       });
     const result = codeOf(resolveVetted("slow.example", { allow: "public" }, { lookup: late, timeoutMs: 100 }));
-    await vi.advanceTimersByTimeAsync(100);
+    await advance(100);
     answer([{ address: "1.1.1.1", family: 4 }]);
     expect(await result).toBe("egress.dns_timeout");
   });
@@ -118,39 +125,6 @@ describe("resolveVetted", () => {
     const { lookup, calls } = answering("1.1.1.1");
     await resolveVetted("Example.COM.", { allow: "public" }, { lookup });
     expect(calls).toEqual(["example.com"]);
-  });
-});
-
-describe("pinnedLookup", () => {
-  test("pinned_lookup_both_shapes", () => {
-    const lookup = pinnedLookup(["93.184.215.14", "2606:4700:4700::1111"]);
-    const single: unknown[] = [];
-    lookup("other.example", {}, (...args) => single.push(...args));
-    expect(single).toEqual([null, "93.184.215.14", 4]);
-    const all: unknown[] = [];
-    lookup("other.example", { all: true }, (...args) => all.push(...args));
-    expect(all).toEqual([
-      null,
-      [
-        { address: "93.184.215.14", family: 4 },
-        { address: "2606:4700:4700::1111", family: 6 },
-      ],
-    ]);
-  });
-
-  test("pinned_lookup_honours_family", () => {
-    const lookup = pinnedLookup(["93.184.215.14", "2606:4700:4700::1111"]);
-    const v6: unknown[] = [];
-    lookup("x", { family: 6 }, (...args) => v6.push(...args));
-    expect(v6).toEqual([null, "2606:4700:4700::1111", 6]);
-    const none: unknown[] = [];
-    pinnedLookup(["93.184.215.14"])("x", { family: 6 }, (...args) => none.push(...args));
-    expect(none[0]).toBeInstanceOf(Error);
-  });
-
-  test("pinned_lookup_refuses_unvetted_input", () => {
-    expect(() => pinnedLookup([])).toThrow();
-    expect(() => pinnedLookup(["example.com"])).toThrow();
   });
 });
 
@@ -258,10 +232,10 @@ describe("resolveVetted on c-ares (public names, P2.01m)", () => {
   });
 
   test("timeout_cancels_the_query", async () => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     const { createResolver, seen } = caresAnswering(["93.184.215.14"], [], 10_000);
     const pending = codeOf(resolveVetted("slow.example.com", { allow: "public" }, { createResolver, timeoutMs: 500 }));
-    await vi.advanceTimersByTimeAsync(500);
+    await advance(500);
     expect(await pending).toBe("egress.dns_timeout");
     expect(seen.cancelled).toBe(1);
   });

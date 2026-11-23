@@ -2,10 +2,11 @@
 // The prototype had one predicate for names and addresses (isPrivateOrMetadataIp), a loopback opt-in and message
 // labels; here an address goes to classifyAddress, a name to isInternalName, loopback is the `allow: "private"` mode
 // and a refusal is a NetGuardError code. Each case keeps its inputs and what it proves.
+
+import { describe, expect, test } from "bun:test";
 import { isIP } from "node:net";
-import { describe, expect, test } from "vitest";
-import { classifyAddress, isInternalName, NetGuardError, pinnedLookup } from "../index.ts";
 import { normaliseHost } from "./classify.ts";
+import { classifyAddress, isInternalName, NetGuardError } from "./index.ts";
 // The seamed entry: these cases stub the resolver, which the package entry no longer accepts (P2.01m).
 import { resolveVettedWith as resolveVetted } from "./resolve.ts";
 
@@ -179,28 +180,6 @@ describe("resolvePinnedAddresses", () => {
     expect(error).toBeInstanceOf(NetGuardError);
     expect((error as NetGuardError).message).toBe("egress.private_address");
     expect(String(error)).not.toContain("10.0.0.1");
-  });
-});
-
-describe("pinnedLookup", () => {
-  const addresses = ["93.184.216.34", "93.184.216.35"];
-
-  test("yields the first address in single mode", () => {
-    const got: unknown[] = [];
-    pinnedLookup(addresses)("ignored.example.com", {}, (...args) => got.push(...args));
-    expect(got).toEqual([null, "93.184.216.34", 4]);
-  });
-
-  test("yields every address in all mode", () => {
-    const got: unknown[] = [];
-    pinnedLookup(addresses)("ignored.example.com", { all: true }, (...args) => got.push(...args));
-    expect(got).toEqual([null, addresses.map((address) => ({ address, family: 4 }))]);
-  });
-
-  test("ignores the hostname it is asked to resolve", () => {
-    const got: unknown[] = [];
-    pinnedLookup(addresses)("evil.example.com", {}, (...args) => got.push(...args));
-    expect(got[1]).toBe("93.184.216.34");
   });
 });
 
