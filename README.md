@@ -56,7 +56,7 @@ as a permanent protocol.
   backend defines its migrations and builds its own images.
 - [pds](https://github.com/unset-sh/pds) owns maintained PDS packaging and customization; backend owns its
   integration and privileged administrative process, not a copy of upstream PDS source.
-- [presentation](https://github.com/unset-sh/presentation) renders supplied data; backend retains decisions
+- [rendering](https://github.com/unset-sh/rendering) renders supplied data; backend retains decisions
   about visibility, data selection and removal. [brand](https://github.com/unset-sh/brand) owns brand assets.
 - [tooling](https://github.com/unset-sh/tooling) owns reusable CI mechanisms, while backend owns meaningful
   product checks. [agent-kit](https://github.com/unset-sh/agent-kit) owns shared agent instructions.

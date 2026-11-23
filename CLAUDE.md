@@ -9,7 +9,7 @@ This is `unset-sh/backend`: Unset's product operations, service contracts and se
 - **Does not belong here:** screens and browser/device integrations (`unset-sh/web`); environment topology and
   rollout orchestration (`unset-sh/deployment`); PDS image customization (`unset-sh/pds`); canonical protocol
   definitions (`unset-sh/lexicons`); reusable automation (`unset-sh/tooling`).
-- **Uses:** planned pinned lexicon and presentation artifacts, shared tooling and agent-kit. No dependencies are
+- **Uses:** planned pinned lexicon and rendering artifacts, shared tooling and agent-kit. No dependencies are
   installed yet. **Used by:** planned web/mobile API consumers and deployment's artifact selection.
 - **Licence:** AGPL-3.0-only first-party work; no outside code contributions for now. Third-party licences remain.
 
