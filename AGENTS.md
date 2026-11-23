@@ -7,7 +7,7 @@ Every assistant working in this repository (Claude, Cursor, Codex or another) fo
    [working rules](https://github.com/unset-sh/agent-kit/blob/ca8a1f6d28e13e258e043f0fb1a7ce52b42982c1/rules/working.md) and
    [engineering principles](https://github.com/unset-sh/agent-kit/blob/ca8a1f6d28e13e258e043f0fb1a7ce52b42982c1/rules/principles.md).
 
-This foundation has no installed `.claude/` copy or CI check yet. The links above pin the instructions read
+This foundation has no installed `.claude/` copy yet; CI runs tooling's Bun check. The links above pin the instructions read
 for the bootstrap; they are not an installed agent-kit copy and are not claimed to update automatically.
 Read all three files before starting work. Before designing boundaries or contracts, read the full
 [org-principles skill](https://github.com/unset-sh/agent-kit/blob/ca8a1f6d28e13e258e043f0fb1a7ce52b42982c1/skills/org-principles/SKILL.md).
