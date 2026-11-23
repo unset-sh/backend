@@ -1,0 +1,11 @@
+{
+  "app.oauth_session.sealed": {
+    "rowKey": "did"
+  },
+  "app.oauth_state.sealed": {
+    "rowKey": "key"
+  },
+  "app.invite.sealed_code": {
+    "rowKey": "id"
+  }
+}
