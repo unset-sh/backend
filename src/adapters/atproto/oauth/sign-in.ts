@@ -1,24 +1,20 @@
 // Starting a sign-in at the account's authorization server (P2.05; plan §3, §5.3 "Login and signup"). The library's
-// `authorize` (@atproto/oauth-client 0.8.9, oauth-client.js:72-140) resolves the input, stores its state with our
-// appState in the sealed state store, pushes the request (PAR) and returns the URL the browser goes to. A server that
-// cannot resolve our permission set refuses it with `invalid_scope` and does not fall back itself (P1.31's
-// scopeStringFallback comment), so the request is made once more with the scope written out. Its errors become the few
-// outcomes the login page tells apart; the authorize tests pin each one to the error the library really throws.
-// P2.06: completing it. The library's `callback` (oauth-client.js:155-223) spends its stored state (single use), checks
-// `iss` against that state's issuer, exchanges the code, checks that the token's `sub` is a DID whose PDS this issuer
-// serves (oauth-server-agent.js `verifyIssuer`), and stores the token set; this returns what the callback route checks.
-import { OAuthCallbackError, OAuthResolverError, OAuthResponseError } from "@atproto/oauth-client-node";
-import { type Did, IdentityError, parseDid } from "@unset/domains-identity";
-import { NetGuardError } from "@unset/infrastructure-net-guard";
-import { scopeString, scopeStringFallback } from "@unset/shared-lexicons";
-import type { Logger } from "@unset/shared-log";
-import { AccountElsewhereError } from "./identity-resolvers.ts";
+// `authorize` (@atproto/oauth-client 0.9.3, dist/oauth-client.js `authorize`) resolves the handle, stores its state with
+// our appState in the sealed state store, pushes the request (PAR) and returns the URL the browser goes to. Its errors
+// become the few outcomes the sign-in page tells apart; the tests pin each one to the error the library really throws.
+// P2.06: completing it. The library's `callback` spends its stored state (single use), checks `iss` against that
+// state's issuer, exchanges the code, checks that the token's `sub` is a DID whose PDS this issuer serves
+// (dist/oauth-server-agent.js `verifyIssuer`), and stores the token set; this returns what the callback route checks.
+import { OAuthCallbackError, OAuthResolverError, OAuthResponseError } from "@atproto/oauth-client";
+import { type Did, IdentityError, parseDid } from "../../../domains/identity/index.ts";
+import type { Logger } from "../../../shared/log/index.ts";
+import { NetGuardError } from "../../egress/index.ts";
 import type { createOAuthClient } from "./oauth-client.ts";
+import { SCOPE } from "./scopes.ts";
 
 type Client = Awaited<ReturnType<typeof createOAuthClient>>["client"];
 
 export type AuthorizeFailure =
-  | "account_elsewhere"
   | "handle_unverified"
   | "handle_not_found"
   | "identity_unavailable"
@@ -34,8 +30,6 @@ export type AuthorizeOptions = {
   readonly prompt?: "login" | "create" | "consent" | "none";
   /** The request's deadline; the 10 s limit nests inside it (RE-1). */
   readonly deadline: AbortSignal | null;
-  /** Our PDS's issuer (P1.36v): the chooser's input must be exactly it; a handle or DID must resolve to it. */
-  readonly ownIssuer: string;
   readonly log: Logger;
 };
 
@@ -51,38 +45,28 @@ const UNREACHABLE: ReadonlySet<string> = new Set([
 ]);
 /**
  * The library's message when the DID document does not claim the handle it was given
- * (@atproto-labs/identity-resolver 0.4.10, atproto-identity-resolver.js:66); the error class is not exported.
+ * (@atproto-labs/identity-resolver 0.4.13, dist/atproto-identity-resolver.js:68); the error class is not exported.
  */
 const NOT_CLAIMED = "does not include the handle";
-/** The library's prefix for every failure of the identity step (oauth-resolver.js:60). */
+/** The library's prefix for every failure of the identity step (@atproto/oauth-resolver dist/oauth-resolver.js). */
 const IDENTITY_STEP = "Failed to resolve identity";
 
-/** `input` is a handle, a DID or the issuer's URL (the PDS chooser). */
+/** `input` is a handle; the library also takes a DID or a server's URL, which the sign-in route never sends. */
 export async function authorize(
   client: Pick<Client, "authorize">,
   input: string,
   options: AuthorizeOptions,
 ): Promise<AuthorizeResult> {
-  // P1.36v: a server's URL is ours exactly, never a trailing slash or a case away, or nothing is sent anywhere. A
-  // handle or DID is refused inside the library's identity step (didResolverForOAuth), before its PDS is asked.
-  if (/^https?:\/\//i.test(input) && input !== options.ownIssuer) return { ok: false, reason: "account_elsewhere" };
   const timeout = AbortSignal.timeout(AUTHORIZE_TIMEOUT_MS);
   const signal = options.deadline ? AbortSignal.any([options.deadline, timeout]) : timeout;
-  const request = (scope: string) =>
-    client.authorize(input, {
+  try {
+    const url = await client.authorize(input, {
       state: options.appState,
-      scope,
+      scope: SCOPE,
       signal,
       ...(options.prompt ? { prompt: options.prompt } : {}),
     });
-  try {
-    return pushed(await request(scopeString()), options.log);
-  } catch (error) {
-    if (!(error instanceof OAuthResponseError && error.error === "invalid_scope")) return failure(error, options.log);
-  }
-  options.log.info("oauth.scope_fallback_used");
-  try {
-    return pushed(await request(scopeStringFallback()), options.log);
+    return pushed(url, options.log);
   } catch (error) {
     return failure(error, options.log);
   }
@@ -115,7 +99,6 @@ function failure(error: unknown, log: Logger): AuthorizeResult {
 
 function reasonOf(error: unknown): AuthorizeFailure {
   const chain = causes(error);
-  if (chain.some((cause) => cause instanceof AccountElsewhereError)) return "account_elsewhere";
   if (chain.some((cause) => cause instanceof IdentityError && cause.kind === "unavailable")) {
     return "identity_unavailable";
   }
@@ -136,7 +119,7 @@ const unreachable = (chain: readonly unknown[]): boolean =>
       (cause instanceof OAuthResponseError && cause.status >= 500),
   );
 
-export type CallbackFailure = "account_elsewhere" | "consent_denied" | "expired" | "pds_unreachable" | "failed";
+export type CallbackFailure = "consent_denied" | "expired" | "pds_unreachable" | "failed";
 export type CompletedSignIn = {
   readonly ok: true;
   /** The account the server vouched for: the token's `sub`, checked by the library against its DID document. */
@@ -171,22 +154,18 @@ const NEEDS_A_PAGE: ReadonlySet<string> = new Set([
   "account_selection_required",
 ]);
 
-/**
- * `query` is the callback URL's whole query, passed to the library as it came. `ownIssuer` is our PDS's issuer
- * (P1.36v): a grant from any other issuer is revoked and refused, so no session is made from it.
- */
+/** `query` is the callback URL's whole query, passed to the library as it came. */
 export async function completeAuthorization(
   client: Pick<Client, "callback">,
   query: URLSearchParams,
   log: Logger,
-  ownIssuer: string,
 ): Promise<CallbackResult> {
   let completed: Awaited<ReturnType<Client["callback"]>>;
   try {
     completed = await client.callback(query);
   } catch (error) {
-    // @atproto/oauth-client-node 0.5.16 inherits oauth-client 0.9.3's callback (dist/oauth-client.js:146-221):
-    // it spends stored state, then attaches its appState to error responses, access_denied included. The callback
+    // oauth-client 0.9.3's callback (dist/oauth-client.js `callback`) spends stored state, then attaches its appState
+    // to error responses, access_denied included. The callback
     // query never supplies this value (https://atproto.com/specs/oauth, Authorization Requests).
     if (error instanceof OAuthCallbackError && error.state !== undefined) {
       if (error.params.get("error") === "access_denied") {
@@ -197,20 +176,12 @@ export async function completeAuthorization(
       }
     }
     const reason = callbackReason(error);
-    // A grant for an account on another PDS is a refusal worth seeing, logged by its fixed kind only (SE-7).
-    if (reason === "failed" || reason === "account_elsewhere") {
-      log.warn("oauth.callback_failed", { kind: reason === "failed" ? kindOf(error) : reason });
-    }
+    if (reason === "failed") log.warn("oauth.callback_failed", { kind: kindOf(error) });
     return { ok: false, reason };
   }
   const { session, state } = completed;
   const revoke = () =>
     session.signOut().catch((error: unknown) => log.warn("oauth.callback_failed", { kind: kindOf(error) }));
-  if (session.serverMetadata.issuer !== ownIssuer) {
-    log.warn("oauth.callback_failed", { kind: "issuer_elsewhere" });
-    await revoke();
-    return { ok: false, reason: "account_elsewhere" };
-  }
   const did = parseDid(session.did);
   let scope: string;
   try {
@@ -236,9 +207,7 @@ function callbackReason(error: unknown): Exclude<CallbackFailure, "consent_denie
     // appState to attach (oauth-client.js:165-175); every later failure carries ours.
     if (error.state === undefined) return "expired";
   }
-  const chain = causes(error);
-  if (chain.some((cause) => cause instanceof AccountElsewhereError)) return "account_elsewhere";
-  return unreachable(chain) ? "pds_unreachable" : "failed";
+  return unreachable(causes(error)) ? "pds_unreachable" : "failed";
 }
 
 /** The error and its causes, outermost first; a short bounded walk, since a cause chain is the library's to build. */

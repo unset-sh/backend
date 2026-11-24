@@ -1,8 +1,13 @@
 // P2.04 (identity-resolvers.ts; P2.01 step C): the OAuth library resolves identities only through the identity domain.
 // The domain runs as itself; only the network under it is a stand-in (DNS, PLC and handle hosts are unmanaged, TE-1).
-import { createDidResolver, type HttpOutcome, type IdentityNetwork, type TxtOutcome } from "@unset/domains-identity";
-import { describe, expect, test } from "vitest";
-import { AccountElsewhereError, didResolverForOAuth, handleResolverForOAuth } from "./identity-resolvers.ts";
+import { describe, expect, test } from "bun:test";
+import {
+  createDidResolver,
+  type HttpOutcome,
+  type IdentityNetwork,
+  type TxtOutcome,
+} from "../../../domains/identity/index.ts";
+import { didResolverForOAuth, handleResolverForOAuth } from "./identity-resolvers.ts";
 
 const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
 const PLC = new URL("https://plc.directory");
@@ -69,10 +74,7 @@ describe("handleResolverForOAuth", () => {
 
 describe("didResolverForOAuth", () => {
   const resolverOver = (get: HttpOutcome) =>
-    didResolverForOAuth(
-      createDidResolver({ network: network({ get }), plcUrl: PLC, cacheTtlS: 60, cacheMax: 10 }),
-      "https://pds.example.com",
-    );
+    didResolverForOAuth(createDidResolver({ network: network({ get }), plcUrl: PLC, cacheTtlS: 60, cacheMax: 10 }));
 
   test("oauthAdapter_document_carries_only_what_the_library_reads", async () => {
     const doc = await resolverOver(json(document)).resolve(DID);
@@ -88,16 +90,15 @@ describe("didResolverForOAuth", () => {
     expect((await resolverOver(json(plain)).resolve(DID)).service).toEqual([]);
   });
 
-  test("oauthAdapter_refuses_an_account_on_another_pds", async () => {
-    // P1.36v: only our own PDS's accounts resolve; another host, however close, throws before the library asks it.
-    for (const endpoint of [
-      "https://pds.example.org",
-      "https://evil-pds.example.com",
-      "https://pds.example.com:8443",
-    ]) {
-      const elsewhere = { ...document, service: [{ ...document.service[0], serviceEndpoint: endpoint }] };
-      await expect(resolverOver(json(elsewhere)).resolve(DID), endpoint).rejects.toBeInstanceOf(AccountElsewhereError);
-    }
+  test("oauthAdapter_accepts_an_account_on_any_pds", async () => {
+    // Alex, 2026-11-23: "any pds is fine". The library still checks the token's issuer against this PDS.
+    const elsewhere = {
+      ...document,
+      service: [{ ...document.service[0], serviceEndpoint: "https://pds.example.org" }],
+    };
+    expect((await resolverOver(json(elsewhere)).resolve(DID)).service).toEqual([
+      { id: "#atproto_pds", type: "AtprotoPersonalDataServer", serviceEndpoint: "https://pds.example.org" },
+    ]);
   });
 
   test("oauthAdapter_did_failures_throw", async () => {
