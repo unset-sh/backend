@@ -5,6 +5,8 @@
 !bunfig.toml
 !tsconfig.json
 !src/
+!policies/
+policies/tests/**
 src/**/*.test.ts
 src/**/*.fake.ts
 src/**/test-*.ts
