@@ -1,6 +1,6 @@
 // withRevokeTimeout (revoke-timeout.ts): a revoke that is already running when the deadline has passed is still observed,
-// because web drains and exits on any unhandled rejection (server.ts).
-import { describe, expect, test } from "vitest";
+// because an unhandled rejection would end the process.
+import { describe, expect, test } from "bun:test";
 import { withRevokeTimeout } from "./revoke-timeout.ts";
 
 describe("withRevokeTimeout", () => {
