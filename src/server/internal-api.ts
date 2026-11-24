@@ -261,10 +261,11 @@ export function internalApi(deps: InternalApiDeps) {
             ...ALWAYS,
           },
           detail: {
-            summary: "End the caller's session and revoke the grant it rides on, which ends its other sessions too",
+            summary: "End the caller's session: this browser only",
             description:
-              "Wraps Better Auth's `auth.api.atprotoSignOut`, which deletes the session and revokes the AT Protocol " +
-              "grant; Better Auth's own sign-out would leave the grant, and the member's other sessions, in place.",
+              "Wraps Better Auth's `auth.api.atprotoSignOut`, which deletes this session only; the member's other " +
+              "browsers stay signed in. When it was the account's last session, the AT Protocol grant is revoked too, " +
+              "so no grant outlives its sessions.",
             tags: ["auth"],
           },
         },
