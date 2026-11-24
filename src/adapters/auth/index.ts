@@ -13,8 +13,8 @@ export { createAuthDatabase } from "./database.ts";
 export type SignOutOutcome = "ok" | "no_session" | "failed";
 
 export type Sessions = {
-  start(handle: string): Promise<StartResult>;
-  complete(query: string): Promise<CompleteResult>;
+  start(handle: string, nonce: string): Promise<StartResult>;
+  complete(query: string, nonce: string): Promise<CompleteResult>;
   /** The caller's session, from its `Authorization: Bearer` token; null when there is none or it ended. */
   current(headers: Headers): Promise<{ readonly did: Did } | null>;
   signOut(headers: Headers): Promise<SignOutOutcome>;
@@ -24,8 +24,8 @@ const unauthorized = (error: unknown): boolean => error instanceof APIError && e
 
 export function createSessions(auth: Auth): Sessions {
   return {
-    start: (handle) => auth.api.atprotoSignIn({ body: { handle } }),
-    complete: (query) => auth.api.atprotoCallback({ body: { query } }),
+    start: (handle, nonce) => auth.api.atprotoSignIn({ body: { handle, nonce } }),
+    complete: (query, nonce) => auth.api.atprotoCallback({ body: { query, nonce } }),
     async current(headers) {
       const found = await auth.api.getSession({ headers, query: { disableCookieCache: true } });
       const did = found === null ? null : parseDid(found.session.did);

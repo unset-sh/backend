@@ -5,6 +5,8 @@ import { internalApi } from "./internal-api.ts";
 import { createServer } from "./serve.ts";
 import { testDeps, WEB_ORIGIN } from "./test-deps.ts";
 
+/** A browser nonce: 32 bytes, base64url. */
+const NONCE = `${"A".repeat(42)}Q`;
 const get = (app: ReturnType<typeof internalApi>, path: string) => app.handle(new Request(`http://backend${path}`));
 
 describe("GET /health", () => {
@@ -68,6 +70,20 @@ describe("every refusal is an RFC 9457 problem document", () => {
     );
   });
 
+  test("a sign-in without the browser's nonce is 422", async () => {
+    const app = internalApi(testDeps());
+    for (const body of [
+      { handle: "alice.example.com" },
+      { handle: "alice.example.com", nonce: "web" },
+      { handle: "alice.example.com", nonce: `${NONCE}A` },
+      { handle: "alice.example.com", nonce: `${NONCE.slice(1)}=` },
+    ]) {
+      expect((await post(app, "/auth/sign-in/atproto", JSON.stringify(body))).status).toBe(422);
+    }
+    const callback = await post(app, "/auth/sign-in/atproto/callback", JSON.stringify({ query: "code=c" }));
+    expect(callback.status).toBe(422);
+  });
+
   test("an error no handler caught is 500 failed, without its message", async () => {
     const app = internalApi(
       testDeps({
@@ -78,7 +94,11 @@ describe("every refusal is an RFC 9457 problem document", () => {
         },
       }),
     );
-    const response = await post(app, "/auth/sign-in/atproto", JSON.stringify({ handle: "alice.example.com" }));
+    const response = await post(
+      app,
+      "/auth/sign-in/atproto",
+      JSON.stringify({ handle: "alice.example.com", nonce: NONCE }),
+    );
     expect(response.status).toBe(500);
     expect(await problemOf(response)).toEqual({
       type: "about:blank",

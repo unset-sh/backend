@@ -7,8 +7,11 @@ import { PROBLEM_CONTENT_TYPE, Problem, problem } from "./problem.ts";
 
 /** What the sign-in operations need: the Unset session over Better Auth (src/adapters/auth/index.ts `Sessions`). */
 export type SessionsPort = {
-  start(handle: string): Promise<{ ok: true; url: string } | { ok: false; reason: StartFailure }>;
-  complete(query: string): Promise<{ ok: true; sessionToken: string } | { ok: false; reason: CompleteFailure }>;
+  start(handle: string, nonce: string): Promise<{ ok: true; url: string } | { ok: false; reason: StartFailure }>;
+  complete(
+    query: string,
+    nonce: string,
+  ): Promise<{ ok: true; sessionToken: string } | { ok: false; reason: CompleteFailure }>;
   current(headers: Headers): Promise<{ readonly did: Did } | null>;
   signOut(headers: Headers): Promise<"ok" | "no_session" | "failed">;
 };
@@ -51,7 +54,14 @@ const START_FAILURES = [
   "pds_unreachable",
   "failed",
 ] as const;
-const COMPLETE_FAILURES = ["consent_denied", "expired", "pds_unreachable", "failed", "scope_missing"] as const;
+const COMPLETE_FAILURES = [
+  "consent_denied",
+  "expired",
+  "state_mismatch",
+  "pds_unreachable",
+  "failed",
+  "scope_missing",
+] as const;
 type StartFailure = (typeof START_FAILURES)[number];
 type CompleteFailure = (typeof COMPLETE_FAILURES)[number];
 
@@ -60,10 +70,15 @@ const closed = <P extends Parameters<typeof t.Object>[0]>(properties: P) =>
 const oneOf = <const W extends readonly [string, ...string[]]>(words: W) => t.UnionEnum(words);
 
 const Health = closed({ status: oneOf(["ok", "unavailable"]) });
+/**
+ * What binds a sign-in to the browser that started it: 32 random bytes, base64url, that web keeps in that browser's
+ * cookie and sends with the start and again with the callback. A callback with another nonce is refused.
+ */
+const Nonce = t.String({ pattern: "^[A-Za-z0-9_-]{43}$" });
 /** The longest handle (https://atproto.com/specs/handle). */
-const SignInBody = closed({ handle: t.String({ minLength: 1, maxLength: 253 }) });
+const SignInBody = closed({ handle: t.String({ minLength: 1, maxLength: 253 }), nonce: Nonce });
 /** The callback URL's query exactly as the authorization server sent it, without the `?`. */
-const CallbackBody = closed({ query: t.String({ minLength: 1, maxLength: 4096 }) });
+const CallbackBody = closed({ query: t.String({ minLength: 1, maxLength: 4096 }), nonce: Nonce });
 const SessionToken = closed({ sessionToken: t.String({ minLength: 1 }) });
 const SessionInfo = closed({ did: t.String({ minLength: 1 }) });
 
@@ -78,6 +93,7 @@ const START_STATUS: Record<StartFailure, 400 | 502 | 503> = {
 const COMPLETE_STATUS: Record<CompleteFailure, 400 | 502 | 503> = {
   consent_denied: 400,
   expired: 400,
+  state_mismatch: 400,
   scope_missing: 400,
   pds_unreachable: 503,
   failed: 502,
@@ -159,7 +175,7 @@ export function internalApi(deps: InternalApiDeps) {
       .post(
         "/auth/sign-in/atproto",
         async ({ body, status }) => {
-          const result = await sessions.start(body.handle);
+          const result = await sessions.start(body.handle, body.nonce);
           if (result.ok) return { url: result.url };
           // One branch per status, so each answer is checked against that status's schema.
           switch (START_STATUS[result.reason]) {
@@ -194,7 +210,7 @@ export function internalApi(deps: InternalApiDeps) {
       .post(
         "/auth/sign-in/atproto/callback",
         async ({ body, status }) => {
-          const result = await sessions.complete(body.query);
+          const result = await sessions.complete(body.query, body.nonce);
           if (result.ok) return { sessionToken: result.sessionToken };
           // One branch per status, so each answer is checked against that status's schema.
           switch (COMPLETE_STATUS[result.reason]) {
