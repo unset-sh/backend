@@ -11,8 +11,9 @@ Every route backend serves follows these conventions. A route that breaks one sa
 contract itself is the route schemas in `src/server/`, and `api/internal/openapi.yaml` is generated from them
 (`bun run openapi`). This page covers what the schemas cannot show: how a route gets its name and its answers.
 
-Status: proposed for Alex's review (2026-11-23). He chose problem+json errors the same day. Nothing here is
-checked automatically yet, and the step 7 routes still answer `{reason}` until they are moved to it.
+Status: agreed with Alex on 2026-11-23 (problem+json errors, `/me`, `/users/:did`, the member id and the Better
+Auth wrappers below). Nothing here is checked automatically yet. The step 7 routes still answer `{reason}`, and
+the callback still sits at `/auth/atproto/callback`, until the next change moves them.
 
 ## Two groups, two contracts
 
@@ -33,8 +34,10 @@ Lexicon and XRPC (`/xrpc/<nsid>`) rather than these REST conventions.
   path: `PATCH /me/profile`, not `/me/update-profile`.
 - **`/me` is the caller.** Everything under `/me` acts on the member the session belongs to. Backend takes the
   DID from the session, never from the path, query or body, so no `/me` route can reach another member's data.
-- **Other members are under `/users/:did`**, named by their DID and never by their handle, because a handle can
-  change hands. A DID in a path is percent-encoded.
+- **Other members are under `/users/:did`**, named by their full DID, colons included
+  (`/users/did:plc:abc123/profile`). A colon is allowed in a path segment (RFC 3986 §3.3, `pchar`), so it needs
+  no encoding. A handle is never an id, because it can change hands; a route that accepts one resolves it to the
+  DID first.
 - **One item of a collection is named by its id** (`/users/:did`). A singleton is singular (`/me/profile`,
   `/health`).
 - **Nest at most one level** below an item: `/users/:did/profile` is fine. Anything deeper gets its own
@@ -44,6 +47,13 @@ Lexicon and XRPC (`/xrpc/<nsid>`) rather than these REST conventions.
 - **Versions:** internal paths have none. The public API puts its version first (`api.unset.sh/v1/...`).
   AT Protocol operations stay under `/xrpc/<nsid>` and follow AT Protocol's rules, not these.
 - No trailing slash, and no file extension except on a rendered file (`/profiles/:did/preview.png`).
+
+## Identifiers
+
+- **Outside backend, a member is their DID.** Every path, body and answer names a member by DID.
+- **Inside backend, a member is a UUID**, Better Auth's user id (`generateId: "uuid"`), with the DID in a unique
+  column beside it. Tables key on the UUID, so a member's rows stay theirs if the DID ever has to be remapped.
+  The UUID never leaves backend: no route takes or answers it.
 
 ## Methods
 
@@ -104,7 +114,38 @@ mapper in `src/server/`:
   their schema and answer `401` with code `no_session` without one.
 - A request that carries a cookie must come from web's origin, or it is refused with `403` and code `untrusted_origin`,
   before any route runs.
-- Better Auth's own routes are not mounted. Backend's routes call Better Auth from inside.
+- Better Auth's own routes are not mounted. Backend's routes call Better Auth from inside (see below).
+
+## Routes that wrap Better Auth
+
+Better Auth's own HTTP routes are not mounted, so web cannot reach them. Every route web calls is backend's own,
+with a contract in `api/internal/openapi.yaml`, and calls Better Auth inside through `auth.api.*`. The wrapper
+exists so that:
+
+- the contract web codes against is ours, and does not change when Better Auth's routes do;
+- errors come back in this page's problem shape, with no Better Auth message text;
+- a session is valid only while the member's AT Protocol token set is, which Better Auth alone does not know.
+
+Each wrapping route's OpenAPI description names the Better Auth call it makes and why it wraps it. They are:
+
+| Route | Better Auth call | What the wrapper adds |
+| --- | --- | --- |
+| `POST /auth/sign-in/atproto` | `auth.api.atprotoSignIn` (our server-only plugin endpoint) | handle checks, the PDS authorization URL |
+| `POST /auth/sign-in/atproto/callback` | `auth.api.atprotoCallback` | the OAuth callback; finds or creates the member, starts the session |
+| `POST /auth/sign-out` | `auth.api.atprotoSignOut` | ends the session and revokes the PDS grant |
+| `GET /me/session` | `auth.api.getSession` | a cheap signed-in check that answers the DID only |
+
+## The internal routes
+
+| Method and path | Session | Answers |
+| --- | --- | --- |
+| `GET /health` | no | `{status}`; 503 when not ready |
+| `POST /auth/sign-in/atproto` | no | `{url}` for `{handle}` |
+| `POST /auth/sign-in/atproto/callback` | no | `{sessionToken}` for `{query}` |
+| `POST /auth/sign-out` | yes | 204 |
+| `GET /me/session` | yes | `{did}` |
+| `GET /me/profile` | yes | `{did, handle, displayName?}` |
+| `PATCH /me/profile` | yes | the updated profile, for `{displayName}`; 409 when the record changed meanwhile |
 
 ## Changing a route
 
