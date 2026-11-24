@@ -12,8 +12,9 @@
     "format": "biome format --write .",
     "test": "bun test",
     "openapi": "bun scripts/openapi.ts",
-    "check": "bun run typecheck && bun run lint && bun run test && bun scripts/openapi.ts --check",
-    "migrate": "bun src/adapters/postgres/migrate-cli.ts"
+    "check": "bun run typecheck && bun run lint && bun run test && bun scripts/openapi.ts --check && bun scripts/app-types.ts --check",
+    "migrate": "bun src/adapters/postgres/migrate-cli.ts",
+    "app-types": "bun scripts/app-types.ts"
   },
   "dependencies": {
     "@atproto/api": "0.30.3",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@elysia/eden": "1.4.10",
     "@swc/core": "1.16.18",
     "@types/bun": "1.4.4",
     "@types/pg": "8.23.1",
