@@ -40,6 +40,7 @@ bun install --frozen-lockfile --ignore-scripts
 bun run check     # type check, Biome, dependency-cruiser boundaries, bun test, contract drift
 bun run openapi   # rewrite api/internal/openapi.yaml after changing a route's schema
 bun run migrate   # apply the migrations as `migrator` (PG_* settings, PG_PASSWORD_FILE)
+docker build .    # the image: server by default, `src/adapters/postgres/migrate-cli.ts` for migrations
 ```
 
 The Postgres tests run against a real server and fail, never skip, without one: set `PGHOST`, `PGUSER` (a
