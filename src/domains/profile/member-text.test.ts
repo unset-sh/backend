@@ -1,6 +1,6 @@
 // What text a member may write on their page (staging break test 2026-11-21: a NUL in the location was saved, and the
 // index then refused the whole record, so the public page went missing while the owner's page still showed).
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import { isPlainName, isPlainText } from "./member-text.ts";
 
 describe("isPlainText", () => {

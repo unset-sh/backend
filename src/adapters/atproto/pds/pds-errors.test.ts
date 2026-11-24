@@ -1,8 +1,8 @@
 // P2.07 (pds-errors.ts): the pure classifiers, including the book’s case tables.
 
-import { OAuthResponseError, TokenRefreshError } from "@atproto/oauth-client-node";
-import { NetGuardError } from "@unset/infrastructure-net-guard";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
+import { OAuthResponseError, TokenRefreshError } from "@atproto/oauth-client";
+import { NetGuardError } from "../../egress/index.ts";
 import { isDpopNonceHandshake, restoreOutcome } from "./pds-errors.ts";
 
 const http = (status: number, error?: string, headers?: Headers | Record<string, string>) =>

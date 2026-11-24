@@ -1,10 +1,12 @@
-// P2.07: the credential is restored in one file. A planted source that calls client.restore or builds an Agent fails.
+// P2.07: the credential is restored in one file (copied from Undefined6799/unset@60228f5
+// infrastructure/pds/pds-call.guard.test.ts, rooted at src/). A planted source that calls client.restore or builds an Agent fails.
+
+import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { expect, test } from "vitest";
 
-const ROOT = join(import.meta.dirname, "..", "..");
-const ALLOWED = "infrastructure/pds/pds-call.ts";
+const ROOT = join(import.meta.dirname, "..", "..", "..");
+const ALLOWED = "adapters/atproto/pds/pds-call.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", "tests"]);
 
 /** True when `source` restores an OAuth session or constructs the XRPC Agent. */

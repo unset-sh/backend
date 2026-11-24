@@ -1,6 +1,7 @@
 // The member's sh.unset.profile record (Alex 2026-10-23: the profile page), read from and written to their own repo.
-// The record key is the lexicon's literal "self" (shared/lexicons/schemas/sh.unset.profile.json).
-import type { Did } from "@unset/domains-identity";
+// The record key is the lexicon's literal "self" (src/domains/profile/lexicon/sh.unset.profile.json). Copied from
+// Undefined6799/unset@60228f5 infrastructure/pds/profile-record.ts.
+import type { Did } from "../../../domains/identity/index.ts";
 import type { PdsContext, PdsResult } from "./pds-call.ts";
 import {
   type BuiltRecord,

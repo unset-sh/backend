@@ -1,8 +1,9 @@
 // One record in the member's own repo, read and written over pdsCall: the profile (profile-record.ts) and each card
-// (card-records.ts). A repo without the record answers RecordNotFound (@atproto/api 0.27.0 com.atproto.repo.getRecord,
+// (card-records.ts). A repo without the record answers RecordNotFound (@atproto/api 0.30.3 com.atproto.repo.getRecord,
 // RecordNotFoundError), which is not a failure. Values are returned unparsed; the owning domain reads them.
+// Copied from Undefined6799/unset@60228f5 infrastructure/pds/repo-record.ts; the record pair reader is left out.
 import type { Agent } from "@atproto/api";
-import type { Did } from "@unset/domains-identity";
+import type { Did } from "../../../domains/identity/index.ts";
 import type { PdsContext, PdsResult } from "./pds-call.ts";
 
 export type RecordAddress = { readonly collection: string; readonly rkey: string };
@@ -26,25 +27,6 @@ export function loadRecord(
   at: RecordAddress,
 ): Promise<PdsResult<StoredRecord | null>> {
   return pdsCall(ctx, did, (agent) => getRecord(agent, did, at), { idempotent: true });
-}
-
-/**
- * Two records of the same repo in one PDS call, so the session is restored once for both (the query budget counts
- * each restore's grant reads: tests/integration/web/query-budget.test.ts). Either both are read or the call fails.
- */
-export function loadRecordPair(
-  pdsCall: PdsCall,
-  ctx: PdsContext | null,
-  did: Did,
-  first: RecordAddress,
-  second: RecordAddress,
-): Promise<PdsResult<readonly [StoredRecord | null, StoredRecord | null]>> {
-  return pdsCall(
-    ctx,
-    did,
-    async (agent) => [await getRecord(agent, did, first), await getRecord(agent, did, second)] as const,
-    { idempotent: true },
-  );
 }
 
 async function getRecord(agent: Agent, did: Did, at: RecordAddress): Promise<StoredRecord | null> {
@@ -72,8 +54,8 @@ export type SaveOutcome<C extends string> =
  * Reads the stored record, lets `build` make the new one from it, and writes it back with `swapRecord` set to the CID
  * it read, so a change made in between is a conflict rather than lost (DA-4: compare-and-swap at the PDS;
  * https://atproto.com/specs/repository and com.atproto.repo.putRecord `swapRecord`, InvalidSwapError in @atproto/api
- * 0.27.0). A first record swaps on null, which the PDS reads as "must not exist yet" (putRecord's swapRecord is
- * nullable: @atproto/lex-client dist/lexicons/com/atproto/repo/putRecord.defs.js:15), so two first saves cannot
+ * 0.30.3). A first record swaps on null, which the PDS reads as "must not exist yet" (putRecord's swapRecord is
+ * nullable: @atproto/api 0.30.3 dist/client/lexicons.js, putRecord `nullable: ['swapRecord']`), so two first saves cannot
  * overwrite each other. The write is not retried (not idempotent).
  */
 export async function saveRecord<C extends string>(
@@ -100,7 +82,8 @@ export async function saveRecord<C extends string>(
           record: { ...built.record },
           swapRecord: swap,
         });
-        // @atproto/pds 0.5.51 putRecord.ts answers no commit when the record was already exactly this.
+        // A PDS answers no commit when the record was already exactly this (@atproto/pds 0.5.51 putRecord.ts, read
+        // for the old app; the commit is optional in @atproto/api 0.30.3's putRecord output).
         return data.commit === undefined ? { kind: "saved" } : { kind: "saved", rev: data.commit.rev };
       } catch (error: unknown) {
         if (isXrpcError(error, "InvalidSwap")) return { kind: "conflict" };

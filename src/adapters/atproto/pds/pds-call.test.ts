@@ -1,9 +1,10 @@
 // P2.07 (pds-call.ts): restore, classify, retry. The OAuth client and the session end are fakes; the XRPC client is
 // the real @atproto/api 0.24.2 Agent over a fake fetchHandler, except where the test throws before any XRPC.
-import { TokenRefreshError } from "@atproto/oauth-client-node";
-import type { Did } from "@unset/domains-identity";
-import type { LogEvent, Logger } from "@unset/shared-log";
-import { describe, expect, test } from "vitest";
+
+import { describe, expect, test } from "bun:test";
+import { TokenRefreshError } from "@atproto/oauth-client";
+import type { Did } from "../../../domains/identity/index.ts";
+import type { LogEvent, Logger } from "../../../shared/log/index.ts";
 import { createPdsCall, type PdsContext } from "./pds-call.ts";
 
 const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;

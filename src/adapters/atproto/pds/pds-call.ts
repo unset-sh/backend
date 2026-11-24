@@ -1,11 +1,11 @@
 // One wrapper for every call to a member's PDS (P2.07; plan §2 rule 3, §5.3, §10). It restores the OAuth session,
 // classifies the failure, retries only an idempotent read, and never turns a nonce handshake or an outage into a
-// logout. @atproto/api 0.24.2 Agent is the XRPC client: its constructor takes a FetchHandlerObject, which is what
-// OAuthSession is (fetchHandler, oauth-session.js). @atproto/lex 0.3.14 is the lexicon CLI, and @atproto/lex-client
-// may be imported only from shared/lexicons (dependency-cruiser SDK_ADAPTERS), so it cannot sit on this session.
+// logout. @atproto/api 0.30.3 Agent is the XRPC client: its constructor takes a FetchHandlerObject, which is what
+// OAuthSession is (fetchHandler, @atproto/oauth-client 0.9.3 dist/oauth-session.js). Copied from
+// Undefined6799/unset@60228f5 infrastructure/pds/pds-call.ts.
 import { Agent } from "@atproto/api";
-import type { Did } from "@unset/domains-identity";
-import type { Logger } from "@unset/shared-log";
+import type { Did } from "../../../domains/identity/index.ts";
+import type { Logger } from "../../../shared/log/index.ts";
 import { className, opFailure, restoreOutcome, statusOf } from "./pds-errors.ts";
 
 /** Book inputs `PDS_CALL_TIMEOUT_MS` and `PDS_UPLOAD_TIMEOUT_MS`. A route passes `timeoutMs` for an upload. */
@@ -33,7 +33,7 @@ export type PdsContext = {
 
 export type SessionInfo = { readonly handle: string; readonly email?: string; readonly emailConfirmed?: boolean };
 
-/** What `OAuthSession.fetchHandler` is (@atproto/oauth-client 0.8.9). `Agent` takes this shape. */
+/** What `OAuthSession.fetchHandler` is (@atproto/oauth-client 0.9.3). `Agent` takes this shape. */
 type SessionFetch = {
   fetchHandler(url: string, init: RequestInit): Promise<Response>;
 };
@@ -42,7 +42,7 @@ type OauthClient = { restore(sub: string): Promise<SessionFetch> };
 export type PdsCallDeps = {
   /** The one OAuth client. `restore` is called only in this file (the guard scans for `client.restore(`). */
   readonly client: OauthClient;
-  /** P2.04s `destroyAllForDid(tx, did, 'auth_dead')`, injected: pds may not import infrastructure/session. */
+  /** Ends every session on the DID's grant: deleting its token set cascades to them (migration 0007). */
   readonly endSessions: (did: Did) => Promise<void>;
   /** One SELECT: the token set is still stored. A 401 with the set gone is `auth_dead`. */
   readonly tokenSetRemains: (did: Did) => Promise<boolean>;

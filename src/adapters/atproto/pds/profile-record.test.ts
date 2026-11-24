@@ -1,8 +1,9 @@
 // The member's sh.unset.profile record, read over pdsCall. The XRPC client is the real @atproto/api Agent over a fake
 // fetchHandler, so the request it sends and the error it parses are the library's own.
-import type { Did } from "@unset/domains-identity";
-import type { Logger } from "@unset/shared-log";
-import { expect, test } from "vitest";
+
+import { expect, test } from "bun:test";
+import type { Did } from "../../../domains/identity/index.ts";
+import type { Logger } from "../../../shared/log/index.ts";
 import { createPdsCall } from "./pds-call.ts";
 import { loadProfileRecord, saveProfileRecord } from "./profile-record.ts";
 

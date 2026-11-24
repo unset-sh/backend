@@ -1,14 +1,10 @@
 // Classifying a PDS failure (P2.07; plan §2 rule 3). Pure: no I/O. The mappings are the error classes of
-// @atproto/oauth-client 0.8.9 (re-exported by @atproto/oauth-client-node 0.5.9) and our own lock and egress errors.
+// @atproto/oauth-client 0.9.3 and our own lock and egress errors. Copied from Undefined6799/unset@60228f5
+// infrastructure/pds/pds-errors.ts.
 // A message is never logged: TokenRefreshError's text contains the DID (session-getter.js, "The session was deleted").
 
-import {
-  OAuthResponseError,
-  TokenInvalidError,
-  TokenRefreshError,
-  TokenRevokedError,
-} from "@atproto/oauth-client-node";
-import { NetGuardError } from "@unset/infrastructure-net-guard";
+import { OAuthResponseError, TokenInvalidError, TokenRefreshError, TokenRevokedError } from "@atproto/oauth-client";
+import { NetGuardError } from "../../egress/index.ts";
 
 const NET_TRANSIENT = new Set([
   "egress.timeout",
@@ -46,7 +42,7 @@ function authenticate(error: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** RFC 9449 nonce handshake, not a dead credential. @atproto/oauth-client 0.8.9 fetch-dpop.js retries one itself. */
+/** RFC 9449 nonce handshake, not a dead credential. @atproto/oauth-client 0.9.3 dist/fetch-dpop.js retries one itself. */
 export function isDpopNonceHandshake(error: unknown): boolean {
   if (errorCode(error) === "use_dpop_nonce") return true;
   return authenticate(error)?.includes('error="use_dpop_nonce"') === true;
@@ -55,7 +51,7 @@ export function isDpopNonceHandshake(error: unknown): boolean {
 export function isLockTimeout(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.name === "LockTimeout") return true;
-  // infrastructure/postgres/lock.ts throws LockError with code lock.timeout. pds cannot import that package.
+  // src/adapters/postgres/lock.ts throws LockError with code lock.timeout; matched by name, not imported.
   return error.name === "LockError" && record(error)?.code === "lock.timeout";
 }
 
