@@ -193,6 +193,16 @@ describe("sign-in and session", () => {
     expect(await admin(`SELECT count(*) FROM auth.session WHERE "ipAddress" <> ''`)).toBe("0");
   });
 
+  test("the member is a UUID inside backend, and no answer carries it", async () => {
+    const token = await signIn(DID_A);
+    const id = await admin(
+      `SELECT u.id FROM auth."user" u JOIN auth.account a ON a."userId" = u.id WHERE a."accountId" = '${DID_A}'`,
+    );
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const response = await call("GET", "/me/session", { headers: bearer(token) });
+    expect(await response.text()).not.toContain(id);
+  });
+
   test("a session ends with its token set", async () => {
     const token = await signIn(DID_B);
     expect(await whoami(token)).toBe(DID_B);

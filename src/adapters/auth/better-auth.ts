@@ -53,6 +53,8 @@ export function createAuth(options: AuthOptions) {
       disableOriginCheck: false,
       disableCSRFCheck: false,
       ipAddress: { disableIpTracking: true },
+      // Members are keyed by a UUID that Postgres makes (migration 0008; docs/api-conventions.md "Identifiers").
+      database: { generateId: "uuid" },
     },
     // Better Auth's messages can carry request data, so only their level is logged.
     logger: { level: "warn", log: (level) => log.warn("auth.library", { kind: level }) },
