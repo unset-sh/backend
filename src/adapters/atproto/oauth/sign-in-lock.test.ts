@@ -1,7 +1,7 @@
 // P1.36y (sign-in-lock.ts): a sign-in or a last-browser sign-out holds its account's OAuth lock from first use to its
 // end, the library's lock calls inside reuse it, and the library's delete of the old set never leaves a gap.
-// The lock and the store are doubles of Postgres (unmanaged here); tests/integration/http covers the real ones.
-import { describe, expect, test } from "vitest";
+// The lock and the store are doubles of Postgres here; src/server/sign-in.integration.test.ts covers the real ones.
+import { describe, expect, test } from "bun:test";
 import { createSignInLock, type NamedLock, type TokenSetStore } from "./sign-in-lock.ts";
 
 const DID = `did:plc:${"a".repeat(24)}`;
@@ -55,7 +55,7 @@ describe("signInLock", () => {
   });
 
   test("the_old_set_is_replaced_without_a_gap", async () => {
-    // @atproto/oauth-client 0.8.9 callback: revoke (getSession under requestLock, delStored) then setStored.
+    // @atproto/oauth-client 0.9.3 callback: revoke (getSession under requestLock, delStored) then setStored.
     const { log, rows, tokenSets, requestLock, during } = world();
     const seen: (string | undefined)[] = [];
     await during(async () => {

@@ -1,10 +1,10 @@
-// Copied from interfaces/http/sign-in-lock.ts for the web process (P1.20e); that copy went at P1.20k.
+// Copied from Undefined6799/unset@60228f5 interfaces/web/src/lib/server/sign-in-lock.ts (P1.36y).
 // One sign-in at a time per account, against the last browser's sign-out (P1.36y; security review 2026-10-28).
 //
-// @atproto/oauth-client 0.8.9 `callback` revokes the account's stored token set and deletes it before it stores the
-// new one (dist/oauth-client.js:196-211). Two things went wrong around that:
-// - another browser of the same account that loaded a page between the delete and the store found no token set, and
-//   the session store ended its session for good (infrastructure/session/store.ts `readOnce`);
+// @atproto/oauth-client 0.9.3 `callback` revokes the account's stored token set and deletes it before it stores the
+// new one (dist/oauth-client.js:187-200). Here every session rides on its DID's token set and is deleted with it
+// (migration 0007), so without this lock:
+// - a sign-in on a second browser deleted the first browser's session, and every other session of the account;
 // - a last browser signing out at the same moment could count no sessions, then revoke the set the new sign-in had
 //   just stored.
 // So a sign-in (`during`) and a last-browser sign-out (`exclusive`) each hold the account's own OAuth lock, the one the
@@ -24,7 +24,7 @@ export type TokenSetStore<V> = {
   del(did: string): Promise<void>;
 };
 
-/** The lock name session-getter.js `get` passes to `requestLock` for an account (@atproto/oauth-client 0.8.9). */
+/** The lock name the library passes to `requestLock` for an account (@atproto/oauth-client 0.9.3 session-getter.js). */
 const lockName = (did: string): string => `@atproto-oauth-client-${did}`;
 
 type Held = { readonly name: string; readonly release: () => void; ended: Promise<unknown> };
