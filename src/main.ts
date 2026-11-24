@@ -1,11 +1,93 @@
 // The backend process's composition root: load the configuration (refusing to start on a missing or invalid key),
 // build each dependency once, and hand them to the server. Nothing else constructs a dependency.
+import { createIdentityNetwork } from "./adapters/atproto/identity-network.ts";
+import { createGrant } from "./adapters/atproto/oauth/grant.ts";
+import type { SavedSession, SavedState } from "./adapters/atproto/oauth/oauth-client.ts";
+import { createOAuthClient } from "./adapters/atproto/oauth/oauth-client.ts";
+import { createAuth, createAuthDatabase, createSessions, telemetryVariablesSet } from "./adapters/auth/index.ts";
+import { createNetGuard, libraryFetch } from "./adapters/egress/index.ts";
+import { connectionOf } from "./adapters/postgres/config.ts";
+import { createRequestLock } from "./adapters/postgres/lock.ts";
+import { createOAuthSessionStore, createOAuthStateStore } from "./adapters/postgres/oauthStores.ts";
+import { createPool } from "./adapters/postgres/pool.ts";
+import { createSealer } from "./adapters/seal/index.ts";
 import { backendConfig } from "./config.ts";
+import { createDidResolver } from "./domains/identity/index.ts";
 import { serve } from "./server/serve.ts";
-import { bootOrExit } from "./shared/config/index.ts";
+import { bootOrExit, ConfigError, exitOnConfigError } from "./shared/config/index.ts";
 import { createLogger } from "./shared/log/index.ts";
+
+// Better Auth sends telemetry once both of these are set, whatever its config says (better-auth.ts). Checked first, so
+// no other key can hide it.
+const telemetry = telemetryVariablesSet(process.env);
+if (telemetry.length > 0) exitOnConfigError(new ConfigError(telemetry.map((key) => ({ key, reason: "invalid" }))));
 
 const config = bootOrExit(backendConfig);
 const log = createLogger({ service: config.UNSET_SERVICE, commit: config.UNSET_COMMIT, env: config.UNSET_ENV });
 
-serve({ ready: async () => true }, log, config.LISTEN_PORT);
+const connection = connectionOf(config);
+const pool = createPool({
+  connection,
+  service: "backend",
+  max: config.PG_POOL_MAX,
+  connectTimeoutS: config.PG_CONNECT_TIMEOUT_S,
+});
+const lockPool = createPool({
+  connection,
+  service: "backend-lock",
+  max: config.LOCK_POOL_MAX,
+  connectTimeoutS: config.PG_CONNECT_TIMEOUT_S,
+});
+const authDatabase = createAuthDatabase({
+  connection: { ...connection, username: config.PG_AUTH_USER, password: config.PG_AUTH_PASSWORD.reveal() },
+  max: config.PG_AUTH_POOL_MAX,
+  connectTimeoutS: config.PG_CONNECT_TIMEOUT_S,
+  log,
+});
+
+const sealer = createSealer(config.SEAL_KEYRING);
+const guard = createNetGuard({ internalHosts: [], allowLoopback: false, commit: config.UNSET_COMMIT });
+const plcUrl = new URL(config.PLC_URL);
+const network = createIdentityNetwork({
+  guard,
+  plcUrl,
+  httpTimeoutMs: config.IDENTITY_HTTP_TIMEOUT_MS,
+  dnsTimeoutMs: config.IDENTITY_DNS_TIMEOUT_MS,
+});
+const resolveDid = createDidResolver({
+  network,
+  plcUrl,
+  cacheTtlS: config.DID_DOC_CACHE_TTL_S,
+  cacheMax: config.DID_DOC_CACHE_MAX,
+});
+const sessionStore = createOAuthSessionStore<SavedSession>({ pool, sealer, log });
+const { client } = createOAuthClient({
+  redirectUri: `${config.WEB_ORIGIN}/auth/callback`,
+  stateStore: createOAuthStateStore<SavedState>({ pool, sealer, log }),
+  sessionStore,
+  requestLock: createRequestLock({ pool: lockPool, log }),
+  fetch: libraryFetch(guard),
+  network,
+  resolveDid,
+  log,
+});
+const grant = createGrant({ client, dropTokenSet: (did) => sessionStore.del(did), log });
+const auth = createAuth({
+  database: authDatabase,
+  secret: config.BETTER_AUTH_SECRET,
+  webOrigin: config.WEB_ORIGIN,
+  grant,
+  log,
+});
+
+/** Ready when both pools answer; a database that is down makes /health 503, never an exception. */
+const ready = async (): Promise<boolean> => {
+  const backendUp = pool`SELECT 1`.then(
+    () => true,
+    () => false,
+  );
+  const [own, auth_] = await Promise.all([backendUp, authDatabase.ready()]);
+  return own && auth_;
+};
+
+serve({ ready, sessions: createSessions(auth), webOrigin: config.WEB_ORIGIN }, log, config.LISTEN_PORT);

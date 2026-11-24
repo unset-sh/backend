@@ -13,7 +13,14 @@ const OPENAPI_VERSION = "3.1.2";
 
 /** The internal API's OpenAPI document as YAML text. Builds the routes only; nothing listens and no port is read. */
 export function internalSpec(): string {
-  const app = internalApi({ ready: async () => true });
+  const unserved = () => {
+    throw new Error("the contract is built from the route schemas; no request is served");
+  };
+  const app = internalApi({
+    ready: async () => true,
+    webOrigin: "http://127.0.0.1:8080",
+    sessions: { start: unserved, complete: unserved, current: unserved, signOut: unserved },
+  });
   const { paths, components } = toOpenAPISchema(app, undefined, undefined, undefined, OPENAPI_VERSION);
   const document = {
     openapi: OPENAPI_VERSION,

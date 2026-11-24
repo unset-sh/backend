@@ -8,6 +8,12 @@ const SDK_HOMES = [
   { sdk: "elysia", home: "^(src/server/|scripts/openapi\\.ts$)" },
   { sdk: "@elysia/[^/]+", home: "^(src/server/|scripts/openapi\\.ts$)" },
   { sdk: "yaml", home: "^scripts/openapi(\\.test)?\\.ts$" },
+  // The atproto OAuth client and its key, scope and metadata packages: the atproto adapter.
+  { sdk: "@atproto(-labs)?/[^/]+", home: "^src/adapters/atproto/" },
+  // Better Auth: the auth adapter. Its database driver and query builder: the file that opens its pool.
+  { sdk: "better-auth", home: "^src/adapters/auth/" },
+  { sdk: "kysely", home: "^src/adapters/auth/database\\.ts$" },
+  { sdk: "pg", home: "^src/adapters/auth/database\\.ts$" },
 ];
 
 /** Built-ins a domain may not import: I/O arrives as a passed-in dependency. */

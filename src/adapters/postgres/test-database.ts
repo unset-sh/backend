@@ -9,6 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { SQL } from "bun";
 import { createLogger } from "../../shared/log/index.ts";
+import type { Connection } from "./config.ts";
 import { migrate } from "./migrate.ts";
 import { MIGRATIONS } from "./migrate-cli.ts";
 import { createPool, type Pool } from "./pool.ts";
@@ -49,6 +50,8 @@ export type TestPostgres = {
    * roles are cluster-global, so it is set once per run and every pool of the run shares it.
    */
   readonly connectAs: (database: string, role: RuntimeRole, max?: number) => Promise<Pool>;
+  /** The connection settings `connectAs` uses, for a client that is not Bun.sql (Better Auth's pg pool). */
+  readonly connectionAs: (database: string, role: RuntimeRole) => Promise<Connection>;
   readonly stop: () => Promise<void>;
 };
 
@@ -87,6 +90,15 @@ export async function startTestPostgres(): Promise<TestPostgres> {
   };
   const passwords = new Map<RuntimeRole, string>();
   const pools: Pool[] = [];
+  const connectionAs = async (database: string, role: RuntimeRole): Promise<Connection> => {
+    let password = passwords.get(role);
+    if (password === undefined) {
+      password = randomPassword();
+      await admin.unsafe(`ALTER ROLE ${role} PASSWORD '${password}'`);
+      passwords.set(role, password);
+    }
+    return { hostname: host, port, database, username: role, password, tls: false };
+  };
   const silent = createLogger({ service: "migrate", commit: "0".repeat(40), env: "test", write: () => undefined });
   return {
     host,
@@ -108,14 +120,9 @@ export async function startTestPostgres(): Promise<TestPostgres> {
       if (!result.ok) throw new Error(`test migrations failed: ${result.reason}`);
       return database;
     },
+    connectionAs,
     connectAs: async (database, role, max = 4) => {
-      let password = passwords.get(role);
-      if (password === undefined) {
-        password = randomPassword();
-        await admin.unsafe(`ALTER ROLE ${role} PASSWORD '${password}'`);
-        passwords.set(role, password);
-      }
-      const connection = { hostname: host, port, database, username: role, password, tls: false as const };
+      const connection = await connectionAs(database, role);
       const pool = createPool({ connection, service: "test", max, connectTimeoutS: 5 });
       pools.push(pool);
       return pool;
