@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type Did, parseDid } from "../domains/identity/index.ts";
 import { createLogger } from "../shared/log/index.ts";
-import { internalApi } from "./internal-api.ts";
+import { internalApi, ROUTE_ACCESS } from "./internal-api.ts";
 import { createServer } from "./serve.ts";
 import { testDeps, WEB_ORIGIN } from "./test-deps.ts";
 
@@ -142,6 +142,7 @@ describe("the caller's profile", () => {
   const ME = parseDid("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa") as Did;
   const OTHER = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
   const signedIn = { current: async () => ({ did: ME }) };
+  const allowed = { may: async () => "allow" as const };
   const patch = (app: ReturnType<typeof internalApi>, body: unknown) =>
     app.handle(
       new Request("http://backend/me/profile", {
@@ -162,6 +163,7 @@ describe("the caller's profile", () => {
     const app = internalApi(
       testDeps({
         sessions: signedIn,
+        authorizer: allowed,
         profiles: {
           get: async (did) => {
             asked.push(did);
@@ -190,7 +192,9 @@ describe("the caller's profile", () => {
       ["pds_unreachable", 503],
     ] as const;
     for (const [reason, status] of cases) {
-      const app = internalApi(testDeps({ sessions: signedIn, profiles: { get: async () => ({ ok: false, reason }) } }));
+      const app = internalApi(
+        testDeps({ sessions: signedIn, authorizer: allowed, profiles: { get: async () => ({ ok: false, reason }) } }),
+      );
       const response = await app.handle(new Request("http://backend/me/profile"));
       expect(response.status).toBe(status);
       expect(((await problemOf(response)) as { code: string }).code).toBe(reason);
@@ -210,11 +214,53 @@ describe("the caller's profile", () => {
     ] as const;
     for (const [reason, status] of cases) {
       const app = internalApi(
-        testDeps({ sessions: signedIn, profiles: { setDisplayName: async () => ({ ok: false, reason }) } }),
+        testDeps({
+          sessions: signedIn,
+          authorizer: allowed,
+          profiles: { setDisplayName: async () => ({ ok: false, reason }) },
+        }),
       );
       const response = await patch(app, { displayName: "x" });
       expect(response.status).toBe(status);
       expect(((await problemOf(response)) as { code: string }).code).toBe(reason);
+    }
+  });
+
+  test("both ask the authorizer about the caller's own profile, before the PDS is reached", async () => {
+    const asked: unknown[] = [];
+    const app = internalApi(
+      testDeps({
+        sessions: signedIn,
+        authorizer: {
+          may: async (principal, action, resource) => {
+            asked.push({ principal, action, resource });
+            return "deny";
+          },
+        },
+      }),
+    );
+    for (const response of [
+      await app.handle(new Request(`http://backend/me/profile?did=${OTHER}`)),
+      await patch(app, { displayName: "x" }),
+    ]) {
+      expect(response.status).toBe(403);
+      expect(((await problemOf(response)) as { code: string }).code).toBe("forbidden");
+    }
+    const own = { kind: "profile", id: ME, attributes: { ownerDid: ME } };
+    expect(asked).toEqual([
+      { principal: { kind: "member", did: ME }, action: "read", resource: own },
+      { principal: { kind: "member", did: ME }, action: "update", resource: own },
+    ]);
+  });
+
+  test("no decision is a 503, never a read or a write", async () => {
+    const app = internalApi(testDeps({ sessions: signedIn, authorizer: { may: async () => "unavailable" } }));
+    for (const response of [
+      await app.handle(new Request("http://backend/me/profile")),
+      await patch(app, { displayName: "x" }),
+    ]) {
+      expect(response.status).toBe(503);
+      expect(((await problemOf(response)) as { code: string }).code).toBe("authorization_unavailable");
     }
   });
 
@@ -225,5 +271,12 @@ describe("the caller's profile", () => {
       expect(response.status).toBe(422);
       expect(((await problemOf(response)) as { code: string }).code).toBe("invalid_request");
     }
+  });
+});
+
+describe("route access", () => {
+  test("every route says what it needs, and every entry is a route", () => {
+    const routes = internalApi(testDeps()).routes.map((r) => `${r.method} ${r.path}`);
+    expect(routes.toSorted()).toEqual(Object.keys(ROUTE_ACCESS).toSorted());
   });
 });

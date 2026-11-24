@@ -1,5 +1,6 @@
 // Test support: internal API dependencies whose every operation fails the test if called, so a test names only what
 // it uses.
+import type { Authorizer } from "../domains/access/index.ts";
 import type { InternalApiDeps, ProfilesPort, SessionsPort } from "./internal-api.ts";
 
 const unused = (name: string) => () => {
@@ -9,9 +10,10 @@ const unused = (name: string) => () => {
 export const WEB_ORIGIN = "http://127.0.0.1:8080";
 
 export function testDeps(
-  overrides: Partial<Omit<InternalApiDeps, "sessions" | "profiles">> & {
+  overrides: Partial<Omit<InternalApiDeps, "sessions" | "profiles" | "authorizer">> & {
     sessions?: Partial<SessionsPort>;
     profiles?: Partial<ProfilesPort>;
+    authorizer?: Partial<Authorizer>;
   } = {},
 ) {
   const sessions: SessionsPort = {
@@ -26,5 +28,17 @@ export function testDeps(
     setDisplayName: unused("profiles.setDisplayName"),
     ...overrides.profiles,
   };
-  return { ready: async () => true, webOrigin: WEB_ORIGIN, ...overrides, sessions, profiles } satisfies InternalApiDeps;
+  const authorizer: Authorizer = {
+    may: unused("authorizer.may"),
+    ready: unused("authorizer.ready"),
+    ...overrides.authorizer,
+  };
+  return {
+    ready: async () => true,
+    webOrigin: WEB_ORIGIN,
+    ...overrides,
+    sessions,
+    profiles,
+    authorizer,
+  } satisfies InternalApiDeps;
 }

@@ -30,6 +30,7 @@ function client() {
         setDisplayName: async (did, displayName) =>
           displayName === "taken" ? { ok: false, reason: "conflict" } : { ok: true, profile: { did, displayName } },
       },
+      authorizer: { may: async () => "allow" },
     }),
   );
   return treaty<App>("http://backend", { fetcher: inProcess(app), headers: { authorization: `Bearer ${TOKEN}` } });

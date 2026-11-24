@@ -15,6 +15,8 @@ const SDK_HOMES = [
   { sdk: "better-auth", home: "^src/adapters/auth/" },
   { sdk: "kysely", home: "^src/adapters/auth/database\\.ts$" },
   { sdk: "pg", home: "^src/adapters/auth/database\\.ts$" },
+  // The Cerbos client: the Cerbos adapter (agent-kit org-0018).
+  { sdk: "@cerbos/[^/]+", home: "^src/adapters/cerbos/" },
 ];
 
 /** Built-ins a domain may not import: I/O arrives as a passed-in dependency. */

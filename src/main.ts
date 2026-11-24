@@ -8,6 +8,7 @@ import { createSignInLock } from "./adapters/atproto/oauth/sign-in-lock.ts";
 import { createPdsCall } from "./adapters/atproto/pds/pds-call.ts";
 import { createProfileStore } from "./adapters/atproto/pds/profile-store.ts";
 import { createAuth, createAuthDatabase, createSessions, telemetryVariablesSet } from "./adapters/auth/index.ts";
+import { createCerbosAuthorizer } from "./adapters/cerbos/index.ts";
 import { createNetGuard, libraryFetch } from "./adapters/egress/index.ts";
 import { connectionOf } from "./adapters/postgres/config.ts";
 import { createRequestLock } from "./adapters/postgres/lock.ts";
@@ -121,14 +122,21 @@ const profiles = createProfiles({
   now: () => new Date().toISOString(),
 });
 
-/** Ready when both pools answer; a database that is down makes /health 503, never an exception. */
+// Every decision on who may do what goes to the Cerbos PDP beside this process (agent-kit org-0018).
+const authorizer = createCerbosAuthorizer({
+  socketPath: config.CERBOS_SOCKET,
+  timeoutMs: config.CERBOS_TIMEOUT_MS,
+  log,
+});
+
+/** Ready when both pools and the PDP answer; one that is down makes /health 503, never an exception. */
 const ready = async (): Promise<boolean> => {
   const backendUp = pool`SELECT 1`.then(
     () => true,
     () => false,
   );
-  const [own, auth_] = await Promise.all([backendUp, authDatabase.ready()]);
-  return own && auth_;
+  const [own, auth_, pdp] = await Promise.all([backendUp, authDatabase.ready(), authorizer.ready()]);
+  return own && auth_ && pdp;
 };
 
 // config.ts holds all three or none, and none only in dev and test.
@@ -136,7 +144,7 @@ const { INTERNAL_TLS_CERT: cert, INTERNAL_TLS_KEY: key, INTERNAL_TLS_CLIENT_CA: 
 const tls =
   cert && key && clientCa ? { cert: cert.reveal(), key: key.reveal(), clientCa: clientCa.reveal() } : undefined;
 serve(
-  { ready, sessions: createSessions(auth), profiles, webOrigin: config.WEB_ORIGIN },
+  { ready, sessions: createSessions(auth), profiles, authorizer, webOrigin: config.WEB_ORIGIN },
   log,
   { api: config.LISTEN_PORT, probe: config.PROBE_PORT },
   tls,
