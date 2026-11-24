@@ -11,7 +11,8 @@ Every route backend serves follows these conventions. A route that breaks one sa
 contract itself is the route schemas in `src/server/`, and `api/internal/openapi.yaml` is generated from them
 (`bun run openapi`). This page covers what the schemas cannot show: how a route gets its name and its answers.
 
-Status: proposed for Alex's review (2026-11-23). Nothing here is checked automatically yet.
+Status: proposed for Alex's review (2026-11-23). He chose problem+json errors the same day. Nothing here is
+checked automatically yet, and the step 7 routes still answer `{reason}` until they are moved to it.
 
 ## Two groups, two contracts
 
@@ -28,17 +29,21 @@ Lexicon and XRPC (`/xrpc/<nsid>`) rather than these REST conventions.
 
 ## Paths
 
-- **Lower case and kebab-case**, nouns for resources: `/me/profile`, not `/getProfile` or `/me/Profile`.
+- **Plural, kebab-case nouns**, lower case: `/users`, `/me/profile`. The verb is the HTTP method, never in the
+  path: `PATCH /me/profile`, not `/me/update-profile`.
 - **`/me` is the caller.** Everything under `/me` acts on the member the session belongs to. Backend takes the
   DID from the session, never from the path, query or body, so no `/me` route can reach another member's data.
-- **A collection is plural, and one item is named by its id:** `/users/:did`, `/users/:did/profile`. A member is
-  named by their DID, never by their handle, because a handle can change hands. A DID in a path is
-  percent-encoded.
-- **A singleton is singular:** `/me/profile`, `/health`.
-- **An action that is not reading or writing a resource** is a verb under its area: `/auth/sign-in/atproto`,
-  `/auth/sign-out`. Keep these few; most things are resources.
-- No trailing slash, no file extensions except a rendered file (`/profiles/:did/preview.png`), and no version in
-  internal paths.
+- **Other members are under `/users/:did`**, named by their DID and never by their handle, because a handle can
+  change hands. A DID in a path is percent-encoded.
+- **One item of a collection is named by its id** (`/users/:did`). A singleton is singular (`/me/profile`,
+  `/health`).
+- **Nest at most one level** below an item: `/users/:did/profile` is fine. Anything deeper gets its own
+  top-level collection, with a query to filter it (`/posts?author=:did`, not `/users/:did/posts/:id/likes`).
+- **An action that is not reading or writing a resource** is a verb sub-path under its area, sent with `POST`:
+  `/auth/sign-in/atproto`, `/auth/sign-in/atproto/callback`, `/auth/sign-out`. Keep these few.
+- **Versions:** internal paths have none. The public API puts its version first (`api.unset.sh/v1/...`).
+  AT Protocol operations stay under `/xrpc/<nsid>` and follow AT Protocol's rules, not these.
+- No trailing slash, and no file extension except on a rendered file (`/profiles/:did/preview.png`).
 
 ## Methods
 
@@ -59,30 +64,45 @@ Lexicon and XRPC (`/xrpc/<nsid>`) rather than these REST conventions.
   bodies). A handler never reads anything the schema does not declare.
 - A success answers the resource itself, with no envelope (`{"did": ..., "handle": ...}`). An answer with
   nothing to say is `204` with no body.
+- A list answers `{"data": [...], "cursor": "..."}`, with `cursor` present only when there is a next page, and
+  takes `?limit=` and `?cursor=` (the same shape as XRPC lists).
 
 ## Errors
 
-A refusal answers `{"reason": "<snake_case_word>"}` and nothing else. Each route's schema lists the exact words
-it can answer for each status, so web can handle every case and an unknown word is a contract break. A reason
-names what happened from the caller's side (`handle_unverified`, `no_session`), never internal detail: no
-message text, stack, SQL state, upstream answer or identifier.
+A refusal answers an RFC 9457 problem document (`content-type: application/problem+json`,
+<https://www.rfc-editor.org/rfc/rfc9457>), the same shape on every route, from one shared schema and one error
+mapper in `src/server/`:
 
-| Status | Meaning here | Example reasons |
+```json
+{ "type": "about:blank", "title": "Unauthorized", "status": 401, "code": "no_session" }
+```
+
+- `type` is `about:blank` and `title` is the status's standard phrase (RFC 9457 §4.2.1), so neither says
+  anything `code` and `status` do not.
+- `code` is the extension member web branches on: one snake_case word. Each route's schema lists the exact
+  codes it can answer for each status, so web can handle every case, and an unknown code is a contract break.
+- A code names what happened from the caller's side (`handle_unverified`, `no_session`). There is no `detail`
+  and no internal information: no message text, stack, SQL state, upstream answer, identifier or echoed input.
+- Schema failures (`422`) and unexpected errors (`500`) go through the same mapper, as `invalid_request` and
+  `failed`.
+
+| Status | Meaning here | Example codes |
 | --- | --- | --- |
 | `400` | the input was well formed but refused | `handle_unverified`, `consent_denied`, `expired` |
 | `401` | no valid session | `no_session` |
 | `403` | the request may not do this | `untrusted_origin` (a cookie without web's Origin) |
 | `404` | no such resource | `not_found` |
 | `409` | the resource changed since it was read | `conflict` |
-| `422` | the body or query does not match the schema | Elysia's validation answer |
+| `422` | the body or query does not match the schema | `invalid_request` |
+| `500` | backend failed | `failed` |
 | `502` | an upstream service answered, but wrongly | `failed` |
 | `503` | a dependency could not be reached in time, or backend is not ready | `pds_unreachable`, `identity_unavailable` |
 
 ## Authentication
 
 - Web sends the member's session token as `Authorization: Bearer <token>`. Routes that need a session say so in
-  their schema and answer `401 no_session` without one.
-- A request that carries a cookie must come from web's origin, or it is refused with `403 untrusted_origin`,
+  their schema and answer `401` with code `no_session` without one.
+- A request that carries a cookie must come from web's origin, or it is refused with `403` and code `untrusted_origin`,
   before any route runs.
 - Better Auth's own routes are not mounted. Backend's routes call Better Auth from inside.
 
