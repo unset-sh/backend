@@ -30,11 +30,50 @@ export function createServer(deps: InternalApiDeps, log: Logger) {
     .use(api);
 }
 
-/** Listens on `port`, and stops taking requests on SIGTERM or SIGINT, letting those in flight finish. */
-export function serve(deps: InternalApiDeps, log: Logger, port: number) {
+/**
+ * GET /health in plain HTTP on 127.0.0.1 only, for the image's HEALTHCHECK: under mutual TLS a probe inside the
+ * container has no client certificate, and must not be given web's. It answers nothing else, and nothing outside the
+ * container reaches loopback.
+ */
+export function serveProbe(ready: InternalApiDeps["ready"], port: number) {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    fetch: async (request) => {
+      if (new URL(request.url).pathname !== "/health" || request.method !== "GET")
+        return new Response(null, { status: 404 });
+      const ok = await ready().catch(() => false);
+      return Response.json({ status: ok ? "ok" : "unavailable" }, { status: ok ? 200 : 503 });
+    },
+  });
+}
+
+/** PEM text for the internal API's mutual TLS: backend's certificate and key, and the CA web's certificate is from. */
+export type InternalTls = { readonly cert: string; readonly key: string; readonly clientCa: string };
+
+/**
+ * Bun.serve's TLS for `tls`: a client must show a certificate from `clientCa`, or the handshake fails before any
+ * request reaches a route. Bun 1.4.4 bun-types `TLSOptions`: `requestCert` asks for the certificate, and a server's
+ * `rejectUnauthorized` (true by default) refuses one that does not verify against `ca`, which replaces the public CAs.
+ */
+export const serverTls = (tls: InternalTls) =>
+  ({ cert: tls.cert, key: tls.key, ca: tls.clientCa, requestCert: true, rejectUnauthorized: true }) as const;
+
+/**
+ * Listens on `port`, over mutual TLS when `tls` is given (plain HTTP only in dev and test, config.ts), and stops
+ * taking requests on SIGTERM or SIGINT, letting those in flight finish.
+ */
+export function serve(
+  deps: InternalApiDeps,
+  log: Logger,
+  ports: { readonly api: number; readonly probe: number },
+  tls?: InternalTls,
+) {
   const app = createServer(deps, log);
+  let probe: ReturnType<typeof serveProbe> | undefined;
   try {
-    app.listen(port);
+    app.listen(tls === undefined ? ports.api : { port: ports.api, tls: serverTls(tls) });
+    probe = serveProbe(deps.ready, ports.probe);
   } catch (error) {
     log.error("http.listen_failed", { kind: error instanceof Error ? error.name : typeof error });
     process.exit(1);
@@ -42,6 +81,7 @@ export function serve(deps: InternalApiDeps, log: Logger, port: number) {
   const stop = () => {
     log.info("http.drain");
     void app.stop();
+    void probe?.stop();
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);

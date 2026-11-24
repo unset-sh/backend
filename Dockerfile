@@ -25,8 +25,9 @@ COPY src /app/src
 # The base runs as root; neither process needs it.
 USER 65532:65532
 EXPOSE 8080
-# GET /health answers 200 once the server listens. Exec form, as there is no shell; Bun reads LISTEN_PORT itself.
+# GET /health on the loopback probe (src/server/serve.ts `serveProbe`, PROBE_PORT, default 8081), which answers in
+# plain HTTP while the API itself needs web's client certificate. Exec form, as there is no shell.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
-  CMD ["bun", "-e", "fetch(`http://127.0.0.1:${process.env.LISTEN_PORT}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+  CMD ["bun", "-e", "fetch(`http://127.0.0.1:${process.env.PROBE_PORT ?? 8081}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 ENTRYPOINT ["bun"]
 CMD ["src/main.ts"]
