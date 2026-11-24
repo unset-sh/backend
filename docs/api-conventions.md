@@ -125,6 +125,14 @@ exists so that:
 - errors come back in this page's problem shape, with no Better Auth message text;
 - a session is valid only while the member's AT Protocol token set is, which Better Auth alone does not know.
 
+Better Auth keeps the hard parts: the session token's format and signature, its lifetime, and the origin and CSRF
+checks. The AT Protocol sign-in is a Better Auth plugin (`src/adapters/auth/atproto-plugin.ts`), called through
+`auth.api.*` like the rest; no route calls Better Auth over HTTP.
+
+The session carries the member's DID as a Better Auth `additionalFields` field. The handle is never stored with it:
+a handle can change or pass to someone else, so a route that shows one checks it against the DID document each time
+(`src/domains/identity/verify-handle.ts`, cached briefly) and leaves it out when it does not resolve back.
+
 Each wrapping route's OpenAPI description names the Better Auth call it makes and why it wraps it. They are:
 
 | Route | Better Auth call | What the wrapper adds |
@@ -133,6 +141,7 @@ Each wrapping route's OpenAPI description names the Better Auth call it makes an
 | `POST /auth/sign-in/atproto/callback` | `auth.api.atprotoCallback` | the OAuth callback; finds or creates the member, starts the session |
 | `POST /auth/sign-out` | `auth.api.atprotoSignOut` | ends the session and revokes the PDS grant |
 | `GET /me/session` | `auth.api.getSession` | a cheap signed-in check that answers the DID only |
+| `GET /me/profile`, `PATCH /me/profile` | `auth.api.getSession` | the caller's DID; the profile itself is their PDS record |
 
 ## The internal routes
 
@@ -143,7 +152,7 @@ Each wrapping route's OpenAPI description names the Better Auth call it makes an
 | `POST /auth/sign-in/atproto/callback` | no | `{sessionToken}` for `{query}` |
 | `POST /auth/sign-out` | yes | 204 |
 | `GET /me/session` | yes | `{did}` |
-| `GET /me/profile` | yes | `{did, handle, displayName?}` |
+| `GET /me/profile` | yes | `{did, handle?, displayName?}`; `handle` only when it verifies |
 | `PATCH /me/profile` | yes | the updated profile, for `{displayName}`; 409 when the record changed meanwhile |
 
 ## Changing a route

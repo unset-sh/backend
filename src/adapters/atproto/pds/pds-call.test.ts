@@ -1,0 +1,433 @@
+// P2.07 (pds-call.ts): restore, classify, retry. The OAuth client and the session end are fakes; the XRPC client is
+// the real @atproto/api 0.24.2 Agent over a fake fetchHandler, except where the test throws before any XRPC.
+
+import { describe, expect, test } from "bun:test";
+import { TokenRefreshError } from "@atproto/oauth-client";
+import type { Did } from "../../../domains/identity/index.ts";
+import type { LogEvent, Logger } from "../../../shared/log/index.ts";
+import { createPdsCall, type PdsContext } from "./pds-call.ts";
+
+const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;
+
+function harness(
+  world: {
+    restore?: () => Promise<{ fetchHandler(url: string, init?: RequestInit): Promise<Response> }>;
+    token?: boolean;
+    fetch?: (url: string) => Promise<Response>;
+  } = {},
+) {
+  const ended: Did[] = [];
+  const lines: LogEvent[] = [];
+  const log: Logger = {
+    info: (event) => lines.push(event),
+    warn: (event) => lines.push(event),
+    error: (event) => lines.push(event),
+    logError: () => undefined,
+  };
+  let fetches = 0;
+  const api = createPdsCall({
+    client: {
+      restore: async () =>
+        world.restore === undefined
+          ? {
+              async fetchHandler(url: string) {
+                fetches += 1;
+                return world.fetch === undefined ? Response.json({ ok: true }) : world.fetch(url);
+              },
+            }
+          : world.restore(),
+    },
+    endSessions: async (did) => {
+      ended.push(did);
+    },
+    tokenSetRemains: async () => world.token !== false,
+    log,
+  });
+  const ctx = (deadlineAt: number, deadline: AbortSignal = new AbortController().signal): PdsContext => ({
+    memo: new Map(),
+    deadline,
+    deadlineAt,
+  });
+  return { ...api, ended, lines, fetches: () => fetches, ctx };
+}
+
+// `deadlineAt` is on performance.now()'s clock, like the route handler's (shared/http routes.ts).
+const far = () => performance.now() + 60_000;
+const httpError = (status: number, name = "XRPCError") => Object.assign(new Error(name), { status, name });
+
+describe("pdsCall", () => {
+  test("pdsCall.retry_respects_deadline", async () => {
+    let calls = 0;
+    const { pdsCall, ctx } = harness();
+    const result = await pdsCall(
+      ctx(performance.now() + 50),
+      DID,
+      async () => {
+        calls += 1;
+        throw httpError(503);
+      },
+      { idempotent: true, timeoutMs: 10_000 },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(calls).toBe(1);
+  });
+
+  test("pdsCall.retries_inside_the_request_deadline", async () => {
+    // P2.07a: a 30 s request (REQUEST_DEADLINE_MS's default) leaves room for the wait and one more 10 s call.
+    let calls = 0;
+    const { pdsCall, ctx } = harness();
+    const result = await pdsCall(
+      ctx(performance.now() + 30_000),
+      DID,
+      async () => {
+        calls += 1;
+        if (calls === 1) throw httpError(503);
+        return "ok";
+      },
+      { idempotent: true },
+    );
+    expect(result).toEqual({ kind: "ok", value: "ok" });
+    expect(calls).toBe(2);
+  });
+
+  test("pdsCall.handshake_retry_once", async () => {
+    let calls = 0;
+    const { pdsCall, ended, ctx } = harness();
+    const once = await pdsCall(
+      ctx(far()),
+      DID,
+      async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("nonce"), { status: 401, error: "use_dpop_nonce" });
+        return "ok";
+      },
+      { idempotent: true },
+    );
+    expect(once).toEqual({ kind: "ok", value: "ok" });
+    calls = 0;
+    const twice = await pdsCall(
+      ctx(far()),
+      DID,
+      async () => {
+        calls += 1;
+        throw Object.assign(new Error("nonce"), { status: 401, error: "use_dpop_nonce" });
+      },
+      { idempotent: true },
+    );
+    expect(twice).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(calls).toBe(2);
+    expect(ended).toEqual([]);
+  });
+
+  test("pdsCall.5xx_idempotent_retry", async () => {
+    let calls = 0;
+    const { pdsCall, ctx } = harness();
+    const retried = await pdsCall(
+      ctx(far()),
+      DID,
+      async () => {
+        calls += 1;
+        if (calls === 1) throw httpError(503);
+        return "ok";
+      },
+      { idempotent: true, timeoutMs: 1000 },
+    );
+    expect(retried).toEqual({ kind: "ok", value: "ok" });
+    expect(calls).toBe(2);
+    calls = 0;
+    const once = await pdsCall(
+      ctx(far()),
+      DID,
+      async () => {
+        calls += 1;
+        throw httpError(503);
+      },
+      { idempotent: false },
+    );
+    expect(once).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(calls).toBe(1);
+  });
+
+  test("pdsCall.401_auth_dead", async () => {
+    const { pdsCall, ended, ctx } = harness({ token: false });
+    const cleared = { value: false };
+    const context = ctx(far());
+    context.clearSession = () => {
+      cleared.value = true;
+    };
+    const result = await pdsCall(
+      context,
+      DID,
+      async () => {
+        throw httpError(401, "InvalidToken");
+      },
+      { idempotent: true },
+    );
+    expect(result).toEqual({ kind: "auth_dead" });
+    expect(ended).toEqual([DID]);
+    expect(cleared.value).toBe(true);
+  });
+
+  test("pdsCall.401_refresh_throws_is_transient", async () => {
+    const { pdsCall, ended, lines, ctx } = harness({ token: true });
+    const result = await pdsCall(
+      ctx(far()),
+      DID,
+      async () => {
+        throw httpError(401, "InvalidToken");
+      },
+      { idempotent: true },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(ended).toEqual([]);
+    expect(lines).toContain("pds.401_with_live_set");
+  });
+
+  test("pdsCall.issuer_mismatch_auth_dead", async () => {
+    const { pdsCall, ended } = harness({
+      restore: async () => {
+        throw new TypeError("Issuer mismatch");
+      },
+    });
+    expect(await pdsCall(null, DID, async () => "no", { idempotent: true })).toEqual({ kind: "auth_dead" });
+    expect(ended).toEqual([DID]);
+  });
+
+  test("pdsCall.auth_method_unsatisfiable_auth_dead", async () => {
+    const { pdsCall, ended } = harness({
+      restore: async () => {
+        const error = new Error("key gone");
+        error.name = "AuthMethodUnsatisfiableError";
+        throw error;
+      },
+    });
+    expect(await pdsCall(null, DID, async () => "no", { idempotent: true })).toEqual({ kind: "auth_dead" });
+    expect(ended).toEqual([DID]);
+  });
+
+  test("pdsCall.refresh_revoked", async () => {
+    const { pdsCall, ended } = harness({
+      restore: async () => {
+        throw new TokenRefreshError(DID, "The session was revoked");
+      },
+    });
+    expect(await pdsCall(null, DID, async () => "no", { idempotent: true })).toEqual({ kind: "auth_dead" });
+    expect(ended).toEqual([DID]);
+  });
+
+  test("pdsCall.lock_timeout", async () => {
+    const { pdsCall, ended } = harness({
+      restore: async () => {
+        const error = new Error("lock");
+        error.name = "LockError";
+        Object.assign(error, { code: "lock.timeout" });
+        throw error;
+      },
+    });
+    expect(await pdsCall(null, DID, async () => "no", { idempotent: true })).toEqual({
+      kind: "transient",
+      code: "lock_timeout",
+    });
+    expect(ended).toEqual([]);
+  });
+
+  test("pdsCall.429", async () => {
+    let calls = 0;
+    const { pdsCall } = harness();
+    const result = await pdsCall(
+      null,
+      DID,
+      async () => {
+        calls += 1;
+        throw httpError(429);
+      },
+      { idempotent: true },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_rate_limited" });
+    expect(calls).toBe(1);
+  });
+
+  test("pdsCall.scope_missing", async () => {
+    const { pdsCall } = harness();
+    const missing = await pdsCall(
+      null,
+      DID,
+      async () => {
+        throw Object.assign(new Error("Missing required scope"), {
+          name: "ScopeMissingError",
+          status: 403,
+          scope: "account:email",
+        });
+      },
+      { idempotent: true },
+    );
+    expect(missing).toEqual({ kind: "scope_missing", scope: "account:email" });
+    const wrong = await pdsCall(
+      null,
+      DID,
+      async () => {
+        throw Object.assign(new Error("nope"), { name: "ScopeMissing", status: 403 });
+      },
+      { idempotent: true },
+    );
+    expect(wrong).toEqual({ kind: "rejected", xrpcError: "ScopeMissing", status: 403 });
+  });
+
+  test("pdsCall.scope_missing_from_the_pds_answer", async () => {
+    // What a PDS sends for a write its grant does not cover: @atproto/oauth-scopes 0.5.14 ScopeMissingError (status
+    // 403, name "ScopeMissingError"), which @atproto/xrpc-server 0.13.10 errors.js fromError writes as
+    // {error: name, message}. The real Agent then throws @atproto/xrpc 0.8.18's XRPCError: `error` is that name, while
+    // `name` stays "Error" (types.js sets none). Staging, 2026-11-21: this read as an outage.
+    const scope = "repo:sh.unset.card?action=create";
+    const { pdsCall, lines } = harness({
+      fetch: async () =>
+        Response.json({ error: "ScopeMissingError", message: `Missing required scope "${scope}"` }, { status: 403 }),
+    });
+    const result = await pdsCall(
+      null,
+      DID,
+      (agent) =>
+        agent.com.atproto.repo.createRecord({
+          repo: DID,
+          collection: "sh.unset.card",
+          record: { $type: "sh.unset.card" },
+        }),
+      { idempotent: false },
+    );
+    expect(result).toEqual({ kind: "scope_missing", scope });
+    expect(lines).toEqual(["pds.scope_missing"]);
+  });
+
+  test("pdsCall.insufficient_scope_challenge", async () => {
+    // RFC 6750 section 3.1: a 403 whose WWW-Authenticate names error="insufficient_scope" is the same refusal.
+    const { pdsCall } = harness({
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "Forbidden", message: "nope" }), {
+          status: 403,
+          headers: { "content-type": "application/json", "www-authenticate": 'DPoP error="insufficient_scope"' },
+        }),
+    });
+    const result = await pdsCall(
+      null,
+      DID,
+      (agent) => agent.com.atproto.repo.deleteRecord({ repo: DID, collection: "sh.unset.card", rkey: "3l2" }),
+      { idempotent: false },
+    );
+    expect(result).toEqual({ kind: "scope_missing" });
+  });
+
+  test("pdsCall.timeout", async () => {
+    const { pdsCall } = harness();
+    const started = Date.now();
+    const result = await pdsCall(null, DID, () => new Promise(() => undefined), { idempotent: false, timeoutMs: 40 });
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(Date.now() - started).toBeLessThan(250);
+  });
+
+  test("pdsCall.request_deadline", async () => {
+    let calls = 0;
+    const { pdsCall, ctx } = harness();
+    const deadline = AbortSignal.timeout(200);
+    const started = Date.now();
+    const result = await pdsCall(
+      ctx(started + 200, deadline),
+      DID,
+      () => {
+        calls += 1;
+        return new Promise(() => undefined);
+      },
+      { idempotent: true, timeoutMs: 10_000 },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(calls).toBe(1);
+  });
+
+  test("pdsCall.spent_deadline_never_dispatches", async () => {
+    // A request past its deadline has already answered 503: no write may start after that.
+    let calls = 0;
+    const { pdsCall, ctx } = harness();
+    const result = await pdsCall(
+      ctx(far(), AbortSignal.abort()),
+      DID,
+      async () => {
+        calls += 1;
+      },
+      { idempotent: false },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(calls).toBe(0);
+  });
+
+  test("pdsCall.deadline_during_restore_never_dispatches", async () => {
+    // The deadline fires while the session is restored (a token refresh, a contended lock). The write must not start,
+    // and nothing it could reject with may go unobserved: web treats an unhandled rejection as fatal (server.ts).
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let calls = 0;
+      const timer = new AbortController();
+      const { pdsCall, ctx } = harness({
+        restore: async () => {
+          timer.abort();
+          return { fetchHandler: async () => Response.json({}) };
+        },
+      });
+      const result = await pdsCall(
+        ctx(far(), timer.signal),
+        DID,
+        () => {
+          calls += 1;
+          return new Promise((_, reject) => setTimeout(() => reject(httpError(500)), 5));
+        },
+        { idempotent: false },
+      );
+      await new Promise((done) => setTimeout(done, 30));
+      expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+      expect(calls).toBe(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("pdsCall.never_throws", async () => {
+    const { pdsCall, lines } = harness();
+    const result = await pdsCall(
+      null,
+      DID,
+      () => {
+        throw new TypeError("nope");
+      },
+      { idempotent: true },
+    );
+    expect(result).toEqual({ kind: "transient", code: "pds_unavailable" });
+    expect(lines).toContain("pds.unexpected");
+  });
+
+  test("pdsSessionInfo.memo", async () => {
+    let calls = 0;
+    const { pdsSessionInfo, ctx } = harness({
+      fetch: async () => {
+        calls += 1;
+        return Response.json({
+          handle: "alice.test",
+          did: DID,
+          email: "a@example.test",
+          emailConfirmed: true,
+        });
+      },
+    });
+    const context = ctx(far());
+    const [a, b, c] = await Promise.all([
+      pdsSessionInfo(context, DID),
+      pdsSessionInfo(context, DID),
+      pdsSessionInfo(context, DID),
+    ]);
+    expect(a).toEqual({ kind: "ok", value: { handle: "alice.test", email: "a@example.test", emailConfirmed: true } });
+    expect(b).toEqual(a);
+    expect(c).toEqual(a);
+    expect(calls).toBe(1);
+  });
+});

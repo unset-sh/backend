@@ -39,6 +39,11 @@ export const backendConfig = defineEntrypointConfig({
   IDENTITY_DNS_TIMEOUT_MS: int({ min: 100, max: 30_000, default: 3_000 }),
   DID_DOC_CACHE_TTL_S: int({ min: 1, max: 3_600, default: 300 }),
   DID_DOC_CACHE_MAX: int({ min: 1, max: 100_000, default: 10_000 }),
+  // The handle shown with a profile is cached once checked both ways (domains/identity/verify-handle.ts); the
+  // defaults are the old app's (Undefined6799/unset@60228f5 interfaces/web/src/lib/server/config.ts).
+  HANDLE_VERIFY_TTL_S: int({ min: 1, max: 3_600, default: 600 }),
+  HANDLE_INVALID_TTL_S: int({ min: 1, max: 3_600, default: 60 }),
+  HANDLE_CACHE_MAX: int({ min: 1, max: 100_000, default: 10_000 }),
 });
 
 export type BackendConfig = Config<typeof backendConfig.fields>;

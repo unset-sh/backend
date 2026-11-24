@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/unset-sh/lexicons",
+  "commit": "964b52323b109846392f2907adfb379d4f6a5c0f",
+  "copied": "2026-11-24",
+  "files": {
+    "sh.unset.profile.json": {
+      "sourcePath": "lexicons/sh/unset/profile.json",
+      "sha256": "19ec531c273812f0b35438fe42fc4f4e4b7e38abfa3bd285a327975d96b6a588"
+    }
+  }
+}

@@ -1,0 +1,227 @@
+// One wrapper for every call to a member's PDS (P2.07; plan §2 rule 3, §5.3, §10). It restores the OAuth session,
+// classifies the failure, retries only an idempotent read, and never turns a nonce handshake or an outage into a
+// logout. @atproto/api 0.30.3 Agent is the XRPC client: its constructor takes a FetchHandlerObject, which is what
+// OAuthSession is (fetchHandler, @atproto/oauth-client 0.9.3 dist/oauth-session.js). Copied from
+// Undefined6799/unset@60228f5 infrastructure/pds/pds-call.ts.
+import { Agent } from "@atproto/api";
+import type { Did } from "../../../domains/identity/index.ts";
+import type { Logger } from "../../../shared/log/index.ts";
+import { className, opFailure, restoreOutcome, statusOf } from "./pds-errors.ts";
+
+/** Book inputs `PDS_CALL_TIMEOUT_MS` and `PDS_UPLOAD_TIMEOUT_MS`. A route passes `timeoutMs` for an upload. */
+export const PDS_CALL_TIMEOUT_MS = 10_000;
+export const PDS_UPLOAD_TIMEOUT_MS = 30_000;
+
+export type PdsResult<T> =
+  | { readonly kind: "ok"; readonly value: T }
+  | { readonly kind: "transient"; readonly code: "pds_unavailable" | "pds_rate_limited" | "lock_timeout" }
+  | { readonly kind: "auth_dead" }
+  | { readonly kind: "scope_missing"; readonly scope?: string }
+  | { readonly kind: "rejected"; readonly xrpcError: string; readonly status: number };
+
+export type PdsContext = {
+  readonly memo: Map<string, unknown>;
+  readonly deadline: AbortSignal;
+  /**
+   * When `deadline` fires, on `performance.now()`'s clock: the route handler's own `deadlineAt` (shared/http
+   * routes.ts), passed through unchanged, so a retry can tell whether it still fits (README rule 8a). Monotonic:
+   * never a wall-clock time.
+   */
+  readonly deadlineAt: number;
+  clearSession?: () => void;
+};
+
+export type SessionInfo = { readonly handle: string; readonly email?: string; readonly emailConfirmed?: boolean };
+
+/** What `OAuthSession.fetchHandler` is (@atproto/oauth-client 0.9.3). `Agent` takes this shape. */
+type SessionFetch = {
+  fetchHandler(url: string, init: RequestInit): Promise<Response>;
+};
+type OauthClient = { restore(sub: string): Promise<SessionFetch> };
+
+export type PdsCallDeps = {
+  /** The one OAuth client. `restore` is called only in this file (the guard scans for `client.restore(`). */
+  readonly client: OauthClient;
+  /** Ends every session on the DID's grant: deleting its token set cascades to them (migration 0007). */
+  readonly endSessions: (did: Did) => Promise<void>;
+  /** One SELECT: the token set is still stored. A 401 with the set gone is `auth_dead`. */
+  readonly tokenSetRemains: (did: Did) => Promise<boolean>;
+  readonly log: Logger;
+  readonly callTimeoutMs?: number;
+};
+
+type CallOpts = { readonly idempotent: boolean; readonly timeoutMs?: number };
+
+const unavailable = { kind: "transient", code: "pds_unavailable" } as const;
+
+function backoffMs(): number {
+  return 200 + Math.floor(Math.random() * 401);
+}
+
+function fits(deadlineAt: number, timeoutMs: number, waitMs: number): boolean {
+  return deadlineAt - performance.now() > waitMs + timeoutMs;
+}
+
+/**
+ * Rejects when `signal` aborts. The work may keep running; the caller has already stopped waiting. `work` is always
+ * observed, so its late rejection is never an unhandled one, which drains web (interfaces/web/server.ts).
+ */
+function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("AbortError"));
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** The request's deadline has fired. A function, so TypeScript keeps no narrowing of `aborted` across an await. */
+function spent(ctx: PdsContext | null): boolean {
+  return ctx?.deadline.aborted === true;
+}
+
+function delay(ms: number, deadline: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (deadline.aborted) {
+      reject(deadline.reason instanceof Error ? deadline.reason : new Error("AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      deadline.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(deadline.reason instanceof Error ? deadline.reason : new Error("AbortError"));
+    };
+    deadline.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** The XRPC client over one restored session. Only this file constructs it (pds-call.guard). */
+function xrpcFromSession(session: SessionFetch): Agent {
+  return new Agent(session);
+}
+
+export function createPdsCall(deps: PdsCallDeps) {
+  const timeoutDefault = deps.callTimeoutMs ?? PDS_CALL_TIMEOUT_MS;
+
+  async function authDead(ctx: PdsContext | null, did: Did): Promise<PdsResult<never>> {
+    await deps.endSessions(did).catch((error: unknown) => {
+      deps.log.warn("pds.unexpected", { kind: className(error) });
+    });
+    ctx?.clearSession?.();
+    return { kind: "auth_dead" };
+  }
+
+  async function pdsCall<T>(
+    ctx: PdsContext | null,
+    did: Did,
+    op: (xrpc: Agent) => Promise<T>,
+    opts: CallOpts,
+  ): Promise<PdsResult<T>> {
+    // A request past its deadline has already answered 503, so nothing may start for it (before restore, which can
+    // refresh tokens and wait on the lock, and again before each attempt).
+    if (spent(ctx)) return unavailable;
+    const key = `pds:${did}`;
+    let xrpc = ctx?.memo.get(key) as Agent | undefined;
+    if (xrpc === undefined) {
+      let session: SessionFetch;
+      try {
+        session = await deps.client.restore(did);
+      } catch (error: unknown) {
+        const outcome = restoreOutcome(error);
+        if (outcome === "auth_dead") return authDead(ctx, did);
+        if (outcome === "lock_timeout") return { kind: "transient", code: "lock_timeout" };
+        if (outcome === "unexpected") deps.log.warn("pds.unexpected", { kind: className(error) });
+        return unavailable;
+      }
+      xrpc = xrpcFromSession(session);
+      ctx?.memo.set(key, xrpc);
+    }
+    const timeoutMs = opts.timeoutMs ?? timeoutDefault;
+    let attempt = 0;
+    while (attempt < 2) {
+      attempt += 1;
+      if (spent(ctx)) return unavailable;
+      const timer = AbortSignal.timeout(timeoutMs);
+      const signal = ctx === null ? timer : AbortSignal.any([timer, ctx.deadline]);
+      try {
+        return { kind: "ok", value: await untilAbort(op(xrpc), signal) };
+      } catch (error: unknown) {
+        if (spent(ctx)) return unavailable;
+        const failure = opFailure(error);
+        if (failure.kind === "handshake") {
+          if (attempt === 1) continue;
+          return unavailable;
+        }
+        if (failure.kind === "unauthorized") {
+          const live = await deps.tokenSetRemains(did).catch(() => true);
+          if (!live) return authDead(ctx, did);
+          deps.log.warn("pds.401_with_live_set");
+          return unavailable;
+        }
+        if (failure.kind === "rate_limited") return { kind: "transient", code: "pds_rate_limited" };
+        if (failure.kind === "scope_missing") {
+          // The grant predates a permission the app now asks for: not an outage, and no field (the scope names a
+          // collection, nothing about the member).
+          deps.log.warn("pds.scope_missing");
+          return failure.scope === undefined
+            ? { kind: "scope_missing" }
+            : { kind: "scope_missing", scope: failure.scope };
+        }
+        if (failure.kind === "rejected") return failure;
+        const wait = backoffMs();
+        const retry =
+          opts.idempotent &&
+          attempt === 1 &&
+          (failure.kind === "retryable" || timer.aborted) &&
+          (ctx === null || fits(ctx.deadlineAt, timeoutMs, wait));
+        if (!retry) {
+          if (failure.kind === "unexpected" && statusOf(error) === undefined) {
+            deps.log.warn("pds.unexpected", { kind: className(error) });
+          }
+          return unavailable;
+        }
+        if (ctx !== null) {
+          try {
+            await delay(wait, ctx.deadline);
+          } catch {
+            return unavailable;
+          }
+        } else {
+          await delay(wait, AbortSignal.timeout(wait + 50));
+        }
+      }
+    }
+    return unavailable;
+  }
+
+  async function loadSession(ctx: PdsContext | null, did: Did): Promise<PdsResult<SessionInfo>> {
+    return pdsCall(
+      ctx,
+      did,
+      async (agent) => {
+        const { data } = await agent.com.atproto.server.getSession();
+        const info: SessionInfo = { handle: data.handle };
+        if (data.email === undefined) return info;
+        return data.emailConfirmed === undefined
+          ? { handle: data.handle, email: data.email }
+          : { handle: data.handle, email: data.email, emailConfirmed: data.emailConfirmed };
+      },
+      { idempotent: true },
+    );
+  }
+
+  function pdsSessionInfo(ctx: PdsContext | null, did: Did): Promise<PdsResult<SessionInfo>> {
+    if (ctx === null) return loadSession(ctx, did);
+    const key = `pds-session:${did}`;
+    const cached = ctx.memo.get(key) as Promise<PdsResult<SessionInfo>> | undefined;
+    if (cached !== undefined) return cached;
+    const pending = loadSession(ctx, did);
+    ctx.memo.set(key, pending);
+    return pending;
+  }
+
+  return { pdsCall, pdsSessionInfo };
+}

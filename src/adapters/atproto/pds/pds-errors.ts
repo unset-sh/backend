@@ -1,0 +1,135 @@
+// Classifying a PDS failure (P2.07; plan §2 rule 3). Pure: no I/O. The mappings are the error classes of
+// @atproto/oauth-client 0.9.3 and our own lock and egress errors. Copied from Undefined6799/unset@60228f5
+// infrastructure/pds/pds-errors.ts.
+// A message is never logged: TokenRefreshError's text contains the DID (session-getter.js, "The session was deleted").
+
+import { OAuthResponseError, TokenInvalidError, TokenRefreshError, TokenRevokedError } from "@atproto/oauth-client";
+import { NetGuardError } from "../../egress/index.ts";
+
+const NET_TRANSIENT = new Set([
+  "egress.timeout",
+  "egress.connect",
+  "egress.dns_failed",
+  "egress.dns_timeout",
+  "egress.tls",
+]);
+
+export function className(error: unknown): string {
+  return error instanceof Error && error.name !== "" ? error.name : "Error";
+}
+
+function record(error: unknown): Record<string, unknown> | undefined {
+  return typeof error === "object" && error !== null ? (error as Record<string, unknown>) : undefined;
+}
+
+export function statusOf(error: unknown): number | undefined {
+  const status = record(error)?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function errorCode(error: unknown): string | undefined {
+  const code = record(error)?.error;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** `WWW-Authenticate` from a Headers object or a plain map (the two shapes the book names). */
+function authenticate(error: unknown): string | undefined {
+  const headers = record(error)?.headers;
+  if (headers instanceof Headers) return headers.get("www-authenticate") ?? undefined;
+  if (typeof headers !== "object" || headers === null) return undefined;
+  const map = headers as Record<string, unknown>;
+  const value = map["www-authenticate"] ?? map["WWW-Authenticate"];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** RFC 9449 nonce handshake, not a dead credential. @atproto/oauth-client 0.9.3 dist/fetch-dpop.js retries one itself. */
+export function isDpopNonceHandshake(error: unknown): boolean {
+  if (errorCode(error) === "use_dpop_nonce") return true;
+  return authenticate(error)?.includes('error="use_dpop_nonce"') === true;
+}
+
+export function isLockTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "LockTimeout") return true;
+  // src/adapters/postgres/lock.ts throws LockError with code lock.timeout; matched by name, not imported.
+  return error.name === "LockError" && record(error)?.code === "lock.timeout";
+}
+
+function netTransient(error: unknown): boolean {
+  return error instanceof NetGuardError && NET_TRANSIENT.has(error.code);
+}
+
+/** What `client.restore` did. `unexpected` is still not a logout: the caller logs the class and returns transient. */
+export function restoreOutcome(error: unknown): "auth_dead" | "lock_timeout" | "unavailable" | "unexpected" {
+  if (
+    error instanceof TokenRefreshError ||
+    error instanceof TokenRevokedError ||
+    error instanceof TokenInvalidError ||
+    errorCode(error) === "invalid_grant"
+  ) {
+    return "auth_dead";
+  }
+  // oauth-server-agent.js:127 throws TypeError('Issuer mismatch') when the user moved their PDS.
+  if (error instanceof TypeError && error.message === "Issuer mismatch") return "auth_dead";
+  if (error instanceof Error && error.name === "AuthMethodUnsatisfiableError") return "auth_dead";
+  if (isLockTimeout(error)) return "lock_timeout";
+  if (netTransient(error)) return "unavailable";
+  if (error instanceof OAuthResponseError && error.status >= 500) return "unavailable";
+  return "unexpected";
+}
+
+export type OpFailure =
+  | { readonly kind: "handshake" }
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "rate_limited" }
+  | { readonly kind: "scope_missing"; readonly scope?: string }
+  | { readonly kind: "rejected"; readonly xrpcError: string; readonly status: number }
+  | { readonly kind: "retryable" }
+  | { readonly kind: "unexpected" };
+
+function xrpcName(error: unknown): string | undefined {
+  if (!(error instanceof Error) || error.name === "" || error.name === "Error") return undefined;
+  return error.name;
+}
+
+/**
+ * A 403 for a grant that does not cover the call. A PDS throws @atproto/oauth-scopes 0.5.14 ScopeMissingError (status
+ * 403), which @atproto/xrpc-server 0.13.10 errors.js `fromError` sends as `{error: "ScopeMissingError", message}`; the
+ * client's @atproto/xrpc 0.8.18 XRPCError carries that word as `error` and keeps `name` "Error" (types.js). The class
+ * itself (`name`) is matched too, and RFC 6750 section 3.1's `error="insufficient_scope"` challenge.
+ */
+function scopeMissing(error: unknown): boolean {
+  if (errorCode(error) === "ScopeMissingError") return true;
+  if (error instanceof Error && error.name === "ScopeMissingError") return true;
+  return authenticate(error)?.includes('error="insufficient_scope"') === true;
+}
+
+/** ScopeMissingError's message is `Missing required scope "<scope>"` (scope-missing-error.js); a `scope` field wins. */
+function missingScope(error: unknown): string | undefined {
+  const scope = record(error)?.scope;
+  if (typeof scope === "string") return scope;
+  const message = error instanceof Error ? error.message : undefined;
+  return message === undefined ? undefined : /^Missing required scope "([^"\s]{1,256})"$/.exec(message)?.[1];
+}
+
+/** How one XRPC attempt failed. A handshake is not a 401 logout. */
+export function opFailure(error: unknown): OpFailure {
+  if (isDpopNonceHandshake(error)) return { kind: "handshake" };
+  const status = statusOf(error);
+  if (status === 401) return { kind: "unauthorized" };
+  if (status === 429) return { kind: "rate_limited" };
+  // A body the PDS will not take (ADR 0088). uploadBlob defines no error of its own, so @atproto/xrpc 0.8.18 throws a
+  // plain XRPCError (dist/types.js: no `name` of its own, `error` from the body, else "PayloadTooLarge" from the code),
+  // which the rule below would read as unexpected. A proxy's bare 413 reads the same.
+  if (status === 413) return { kind: "rejected", xrpcError: errorCode(error) ?? "PayloadTooLarge", status };
+  if (status === 403 && scopeMissing(error)) {
+    const scope = missingScope(error);
+    return scope === undefined ? { kind: "scope_missing" } : { kind: "scope_missing", scope };
+  }
+  if (status !== undefined && status >= 400 && status < 500) {
+    const name = xrpcName(error);
+    if (name !== undefined) return { kind: "rejected", xrpcError: name, status };
+  }
+  if (netTransient(error) || (status !== undefined && status >= 500)) return { kind: "retryable" };
+  return { kind: "unexpected" };
+}
