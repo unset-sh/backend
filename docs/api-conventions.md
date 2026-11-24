@@ -139,7 +139,7 @@ Each wrapping route's OpenAPI description names the Better Auth call it makes an
 | --- | --- | --- |
 | `POST /auth/sign-in/atproto` | `auth.api.atprotoSignIn` (our server-only plugin endpoint) | handle checks, the PDS authorization URL |
 | `POST /auth/sign-in/atproto/callback` | `auth.api.atprotoCallback` | the OAuth callback; finds or creates the member, starts the session |
-| `POST /auth/sign-out` | `auth.api.atprotoSignOut` | ends the session and revokes the PDS grant |
+| `POST /auth/sign-out` | `auth.api.atprotoSignOut` | ends this browser's session; revokes the PDS grant with the account's last one |
 | `GET /me/session` | `auth.api.getSession` | a cheap signed-in check that answers the DID only |
 | `GET /me/profile`, `PATCH /me/profile` | `auth.api.getSession` | the caller's DID; the profile itself is their PDS record |
 

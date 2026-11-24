@@ -25,6 +25,8 @@ map with `npm run map`, and update this section in the same piece of work.
   path and commit, and note weak spots in agent-kit. Never copy a security weakness or retire a security control.
 - Model product capabilities first. Keep provider types and errors inside adapters; domain imports must not
   depend on server frameworks or infrastructure. Wire known dependencies explicitly in each process.
+- Write each Elysia route group as one plain `new Elysia({ name })` chain, not built by a generic factory or
+  plugin function: web's Eden client reads `api/internal/app.d.ts`, and a factory's generics can widen it to `any`.
 - Keep public API contracts, private domain ports and client UI interfaces distinct. Choose the public schema
   format with the first reviewed operation; this foundation does not select one.
 - Preserve separate privileged processes, least-privilege database roles and device key custody. A repository
