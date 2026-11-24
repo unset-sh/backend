@@ -2,7 +2,7 @@
 // one thing the Better Auth `atproto` plugin (src/adapters/auth/) knows of the OAuth client, so the plugin holds no
 // @atproto type and this file holds no Better Auth one.
 import { timingSafeEqual } from "node:crypto";
-import type { Did } from "../../../domains/identity/index.ts";
+import { type Did, type HandleResolution, parseDid, parseHandle } from "../../../domains/identity/index.ts";
 import type { Logger } from "../../../shared/log/index.ts";
 import type { createOAuthClient } from "./oauth-client.ts";
 import { withRevokeTimeout } from "./revoke-timeout.ts";
@@ -19,6 +19,29 @@ type Client = ReturnType<typeof createOAuthClient>["client"];
  */
 export const BROWSER_NONCE = /^[A-Za-z0-9_-]{43}$/;
 
+/**
+ * What a sign-in seals in the library's appState: the browser's nonce and the DID the typed handle named, so the
+ * callback accepts only that browser and only that account (the old app's appState, sign-in-state.ts `appStateOf`).
+ */
+type SignInState = { readonly nonce: string; readonly did: Did };
+
+const sealState = (state: SignInState): string => JSON.stringify({ v: 1, nonce: state.nonce, did: state.did });
+
+/** The state `sealState` wrote, or null for anything else (an older sign-in's fixed value included). */
+function openState(text: string | null): SignInState | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text ?? "");
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const { v, nonce, did } = value as Record<string, unknown>;
+  if (v !== 1 || typeof nonce !== "string" || !BROWSER_NONCE.test(nonce) || typeof did !== "string") return null;
+  const parsed = parseDid(did);
+  return parsed === null ? null : { nonce, did: parsed };
+}
+
 /** Equal nonces, compared in constant time. */
 function sameNonce(a: string, b: string): boolean {
   const [x, y] = [Buffer.from(a), Buffer.from(b)];
@@ -28,17 +51,23 @@ function sameNonce(a: string, b: string): boolean {
 export type StartResult =
   | { readonly ok: true; readonly url: string }
   | { readonly ok: false; readonly reason: AuthorizeFailure };
-export type FinishFailure = CallbackFailure | "scope_missing" | "state_mismatch";
+export type FinishFailure = CallbackFailure | "scope_missing" | "state_mismatch" | "account_mismatch";
 export type FinishResult =
   | { readonly ok: true; readonly did: Did }
-  | { readonly ok: false; readonly reason: FinishFailure };
+  /**
+   * A callback that is not this browser's, or not for the account it typed. The server's grant for `stray` is kept,
+   * since the library put it in place of that account's token set, which its other sessions ride on; the caller
+   * ends it with `endIfLast` once the sign-in's scope is over.
+   */
+  | { readonly ok: false; readonly reason: "state_mismatch" | "account_mismatch"; readonly stray: Did }
+  | { readonly ok: false; readonly reason: Exclude<FinishFailure, "state_mismatch" | "account_mismatch"> };
 
 export type Grant = {
   /** The authorization server's URL for `handle`, where web sends the browser, bound to `nonce` (BROWSER_NONCE). */
   start(handle: string, nonce: string, deadline: AbortSignal): Promise<StartResult>;
   /**
-   * The DID the server vouched for, with its token set stored, only when `nonce` is the one the sign-in started with;
-   * every refusal leaves no grant behind.
+   * The DID the server vouched for, with its token set stored, only when `nonce` is the one the sign-in started with
+   * and the DID is the one its handle named. A wrong scope is revoked; a mismatch names its stray grant.
    */
   finish(query: URLSearchParams, nonce: string): Promise<FinishResult>;
   /**
@@ -70,6 +99,8 @@ export type GrantOptions = {
   /** Deletes the stored token set for a DID (the sealed session store's `del`). */
   readonly dropTokenSet: (did: Did) => Promise<void>;
   readonly scopes: SignInScopes;
+  /** The identity domain's `resolveHandle`, so the callback knows which account the typed handle named. */
+  readonly resolveHandle: (handle: string) => Promise<HandleResolution>;
   readonly log: Logger;
 };
 
@@ -89,7 +120,14 @@ export function createGrant(options: GrantOptions): Grant {
   return {
     async start(handle, nonce, deadline) {
       if (!BROWSER_NONCE.test(nonce)) throw new RangeError("grant.start: the nonce is not 32 bytes of base64url");
-      const result = await authorize(client, handle, { appState: nonce, deadline, log });
+      // Resolved here as well as in the library, as the old app did (sign-in.ts `chooseAccount`): the library checks
+      // that the DID document claims the handle, and the callback refuses any other account the server sends back.
+      if (parseHandle(handle) === null) return { ok: false, reason: "handle_not_found" };
+      const found = await options.resolveHandle(handle);
+      if (found.status === "not_found") return { ok: false, reason: "handle_not_found" };
+      if (found.status === "unavailable") return { ok: false, reason: "identity_unavailable" };
+      const appState = sealState({ nonce, did: found.did });
+      const result = await authorize(client, handle, { appState, deadline, log });
       return result.ok ? { ok: true, url: result.url.href } : result;
     },
     async finish(query, nonce) {
@@ -100,11 +138,17 @@ export function createGrant(options: GrantOptions): Grant {
           ? { ok: false, reason: "failed" }
           : { ok: false, reason: result.reason };
       }
-      // Another browser's callback (a sign-in CSRF), or one this code did not start: the grant is not kept.
-      if (typeof result.appState !== "string" || !BROWSER_NONCE.test(nonce) || !sameNonce(result.appState, nonce)) {
+      // Another browser's callback (a sign-in CSRF), or one this code did not start: no session. The grant stays for
+      // now, as in the old app (oauth-callback.ts): it replaced that account's token set, which other sessions use.
+      const state = openState(result.appState);
+      if (state === null || !BROWSER_NONCE.test(nonce) || !sameNonce(state.nonce, nonce)) {
         log.warn("oauth.callback_failed", { kind: "app_state" });
-        await result.revoke();
-        return { ok: false, reason: "state_mismatch" };
+        return { ok: false, reason: "state_mismatch", stray: result.did };
+      }
+      // The server signed in another account than the handle named (its chooser let the member switch).
+      if (result.did !== state.did) {
+        log.warn("oauth.callback_failed", { kind: "account_mismatch" });
+        return { ok: false, reason: "account_mismatch", stray: result.did };
       }
       if (!grantCovers(result.scope).ok) {
         log.warn("pds.scope_missing");

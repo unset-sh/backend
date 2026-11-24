@@ -149,7 +149,7 @@ Each wrapping route's OpenAPI description names the Better Auth call it makes an
 | --- | --- | --- |
 | `GET /health` | no | `{status}`; 503 when not ready |
 | `POST /auth/sign-in/atproto` | no | `{url}` for `{handle, nonce}` |
-| `POST /auth/sign-in/atproto/callback` | no | `{sessionToken}` for `{query, nonce}`; `state_mismatch` when the nonce is not the start's |
+| `POST /auth/sign-in/atproto/callback` | no | `{sessionToken}` for `{query, nonce}`; `state_mismatch` when the nonce is not the start's, `account_mismatch` when the server signed in another account than the handle named |
 | `POST /auth/sign-out` | yes | 204 |
 | `GET /me/session` | yes | `{did}` |
 | `GET /me/profile` | yes | `{did, handle?, displayName?}`; `handle` only when it verifies |

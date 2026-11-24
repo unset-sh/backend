@@ -1,11 +1,13 @@
-// grant.ts: what sign-in and sign-out see of the OAuth client. Every refusal after the library stored a token set
-// revokes it, and ending a grant leaves no token set even when the revocation fails.
+// grant.ts: what sign-in and sign-out see of the OAuth client. A callback is accepted only for the browser and the
+// account that started it; a wrong scope is revoked, a mismatch names its grant for the caller to end once it is
+// the last; ending a grant leaves no token set even when the revocation fails.
 import { describe, expect, test } from "bun:test";
 import type { Did } from "../../../domains/identity/index.ts";
 import type { Logger } from "../../../shared/log/index.ts";
 import { createGrant, type GrantOptions, type SignInScopes } from "./grant.ts";
 
 const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;
+const OTHER_DID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb" as Did;
 /** The nonce the browser that started the sign-in holds, and another browser's. */
 const NONCE = `${"A".repeat(42)}Q`;
 const OTHER_NONCE = `${"B".repeat(42)}Q`;
@@ -19,6 +21,12 @@ const scopes: SignInScopes = {
     return fn();
   },
 };
+
+/** The appState a sign-in for `did` from the browser holding `nonce` seals (grant.ts `sealState`). */
+const sealed = (nonce: string, did: Did = DID) => JSON.stringify({ v: 1, nonce, did });
+/** The handle resolves to DID. */
+const resolveHandle: GrantOptions["resolveHandle"] = async () => ({ status: "found", did: DID, via: "dns" });
+const deps = { dropTokenSet: async () => undefined, scopes, resolveHandle, log };
 
 /** A library client whose callback answers `state` and `scope`, recording revocations. */
 function client(state: string | null, scope: string) {
@@ -43,36 +51,56 @@ function client(state: string | null, scope: string) {
 
 describe("grant", () => {
   test("finish_returns_the_did_for_the_full_scope", async () => {
-    const { fake, revoked } = client(NONCE, "atproto repo:sh.unset.profile");
-    const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
+    const { fake, revoked } = client(sealed(NONCE), "atproto repo:sh.unset.profile");
+    const grant = createGrant({ client: fake, ...deps });
     expect(await grant.finish(new URLSearchParams("code=c"), NONCE)).toEqual({ ok: true, did: DID });
     expect(revoked).toEqual([]);
   });
 
   test("finish_revokes_a_grant_missing_the_profile_scope", async () => {
-    const { fake, revoked } = client(NONCE, "atproto");
-    const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
+    const { fake, revoked } = client(sealed(NONCE), "atproto");
+    const grant = createGrant({ client: fake, ...deps });
     expect(await grant.finish(new URLSearchParams("code=c"), NONCE)).toEqual({ ok: false, reason: "scope_missing" });
     expect(revoked).toEqual(["callback"]);
   });
 
-  test("finish_revokes_a_sign_in_another_browser_started", async () => {
-    // Sign-in CSRF: the callback is real, but its nonce is not the one this browser holds.
-    for (const [stored, held] of [
-      [OTHER_NONCE, NONCE],
-      [NONCE, OTHER_NONCE],
+  test("finish_refuses_a_sign_in_another_browser_started_without_revoking", async () => {
+    // Sign-in CSRF: the callback is real, but its nonce is not the one this browser holds. No session, and the grant
+    // stays: the library put it in place of that account's token set, which its other sessions ride on.
+    for (const [stored, nonce] of [
+      [sealed(OTHER_NONCE), NONCE],
+      [sealed(NONCE), OTHER_NONCE],
       ["web", NONCE],
-      [NONCE, "short"],
-      [NONCE, `${NONCE}A`],
+      [NONCE, NONCE],
+      [JSON.stringify({ v: 2, nonce: NONCE, did: DID }), NONCE],
+      [JSON.stringify({ v: 1, nonce: NONCE, did: "alice" }), NONCE],
+      [sealed(NONCE), "short"],
+      [sealed(NONCE), `${NONCE}A`],
     ] as const) {
       const { fake, revoked } = client(stored, "atproto repo:sh.unset.profile");
-      const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
-      expect(await grant.finish(new URLSearchParams("code=c"), held)).toEqual({ ok: false, reason: "state_mismatch" });
-      expect(revoked).toEqual(["callback"]);
+      const grant = createGrant({ client: fake, ...deps });
+      expect(await grant.finish(new URLSearchParams("code=c"), nonce)).toEqual({
+        ok: false,
+        reason: "state_mismatch",
+        stray: DID,
+      });
+      expect(revoked).toEqual([]);
     }
   });
 
-  test("start_carries_the_nonce_as_app_state_and_refuses_a_malformed_one", async () => {
+  test("finish_refuses_another_account_than_the_handle_named", async () => {
+    // The member typed a handle for OTHER_DID, then picked DID at the server's chooser.
+    const { fake, revoked } = client(sealed(NONCE, OTHER_DID), "atproto repo:sh.unset.profile");
+    const grant = createGrant({ client: fake, ...deps });
+    expect(await grant.finish(new URLSearchParams("code=c"), NONCE)).toEqual({
+      ok: false,
+      reason: "account_mismatch",
+      stray: DID,
+    });
+    expect(revoked).toEqual([]);
+  });
+
+  test("start_seals_the_nonce_and_the_handle's_did_and_refuses_a_malformed_nonce", async () => {
     let seen: unknown;
     const fake = {
       authorize: async (_handle: string, options: { state?: string }) => {
@@ -80,16 +108,40 @@ describe("grant", () => {
         return new URL("https://pds.example/authorize?request_uri=urn%3Aexample");
       },
     } as unknown as GrantOptions["client"];
-    const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
+    const grant = createGrant({ client: fake, ...deps });
     expect((await grant.start("alice.example.com", NONCE, AbortSignal.timeout(1000))).ok).toBe(true);
-    expect(seen).toBe(NONCE);
+    expect(seen).toBe(sealed(NONCE));
     expect(grant.start("alice.example.com", "web", AbortSignal.timeout(1000))).rejects.toThrow(RangeError);
+  });
+
+  test("start_refuses_a_handle_that_names_no_account_before_asking_a_server", async () => {
+    let asked = 0;
+    const fake = {
+      authorize: async () => {
+        asked += 1;
+        return new URL("https://pds.example/authorize?request_uri=urn%3Aexample");
+      },
+    } as unknown as GrantOptions["client"];
+    const answers: Record<string, Awaited<ReturnType<GrantOptions["resolveHandle"]>>> = {
+      "gone.example.com": { status: "not_found" },
+      "slow.example.com": { status: "unavailable" },
+    };
+    const grant = createGrant({
+      client: fake,
+      ...deps,
+      resolveHandle: async (handle) => answers[handle] ?? { status: "not_found" },
+    });
+    const start = (handle: string) => grant.start(handle, NONCE, AbortSignal.timeout(1000));
+    expect(await start("gone.example.com")).toEqual({ ok: false, reason: "handle_not_found" });
+    expect(await start("slow.example.com")).toEqual({ ok: false, reason: "identity_unavailable" });
+    expect(await start("not a handle")).toEqual({ ok: false, reason: "handle_not_found" });
+    expect(asked).toBe(0);
   });
 
   test("end_if_last_revokes_only_when_no_session_remains", async () => {
     const revoked: string[] = [];
     const fake = { revoke: async (did: string) => void revoked.push(did) } as unknown as GrantOptions["client"];
-    const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
+    const grant = createGrant({ client: fake, ...deps });
     held.length = 0;
     await grant.endIfLast(DID, async () => 1, AbortSignal.timeout(1000));
     expect(revoked).toEqual([]);
@@ -103,9 +155,9 @@ describe("grant", () => {
     const revoked: string[] = [];
     const fake = { revoke: async (did: string) => void revoked.push(did) } as unknown as GrantOptions["client"];
     const broken: SignInScopes = { during: (fn) => fn(), exclusive: async () => Promise.reject(new Error("timeout")) };
-    const lockless = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes: broken, log });
+    const lockless = createGrant({ client: fake, ...deps, scopes: broken });
     await lockless.endIfLast(DID, async () => 1, AbortSignal.timeout(1000));
-    const countless = createGrant({ client: fake, dropTokenSet: async () => undefined, scopes, log });
+    const countless = createGrant({ client: fake, ...deps });
     await countless.endIfLast(DID, async () => Promise.reject(new Error("db down")), AbortSignal.timeout(1000));
     expect(revoked).toEqual([DID, DID]);
   });
@@ -115,7 +167,7 @@ describe("grant", () => {
     const failing = {
       revoke: async () => Promise.reject(new Error("unreachable")),
     } as unknown as GrantOptions["client"];
-    const grant = createGrant({ client: failing, dropTokenSet: async (did) => void dropped.push(did), scopes, log });
+    const grant = createGrant({ client: failing, ...deps, dropTokenSet: async (did) => void dropped.push(did) });
     await grant.end(DID, AbortSignal.timeout(1000));
     expect(dropped).toEqual([DID]);
   });
@@ -128,6 +180,7 @@ describe("grant", () => {
       client: failing,
       dropTokenSet: async () => Promise.reject(new Error("db down")),
       scopes,
+      resolveHandle,
       log,
     });
     await expect(grant.end(DID, AbortSignal.timeout(1000))).rejects.toThrow("db down");

@@ -10,7 +10,13 @@ import { createHash } from "node:crypto";
 import type { BetterAuthPlugin, StandardSchemaV1 } from "better-auth";
 import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { type Did, parseDid } from "../../domains/identity/index.ts";
-import { BROWSER_NONCE, type FinishFailure, type Grant, type StartResult } from "../atproto/oauth/grant.ts";
+import {
+  BROWSER_NONCE,
+  type FinishFailure,
+  type FinishResult,
+  type Grant,
+  type StartResult,
+} from "../atproto/oauth/grant.ts";
 
 export const PROVIDER_ID = "atproto";
 /** The longest handle (https://atproto.com/specs/handle) and the longest callback query web relays. */
@@ -70,30 +76,49 @@ export function atproto(grant: Grant) {
        */
       atprotoCallback: createAuthEndpoint.serverOnly(
         { method: "POST", body: withNonce("query", QUERY_MAX) },
-        async (ctx): Promise<CompleteResult> =>
-          grant.signingIn(async (): Promise<CompleteResult> => {
-            const finished = await grant.finish(new URLSearchParams(ctx.body.query), ctx.body.nonce);
-            if (!finished.ok) return finished;
-            const { did } = finished;
-            const adapter = ctx.context.internalAdapter;
-            const key = { providerId: PROVIDER_ID, accountId: did };
-            let userId = (await adapter.findAccountByKey(key))?.userId;
-            if (userId === undefined) {
-              try {
-                const created = await adapter.createOAuthUser(
-                  { name: "", email: placeholderEmail(did), emailVerified: false },
-                  { providerId: PROVIDER_ID, accountId: did },
-                );
-                userId = created.user.id;
-              } catch (cause) {
-                // A second callback for the same new DID created it first; the unique key (migration 0007) refused ours.
-                userId = (await adapter.findAccountByKey(key))?.userId;
-                if (userId === undefined) throw cause;
+        async (ctx): Promise<CompleteResult> => {
+          const adapter = ctx.context.internalAdapter;
+          const outcome = await grant.signingIn(
+            async (): Promise<CompleteResult | Exclude<FinishResult, { ok: true }>> => {
+              const finished = await grant.finish(new URLSearchParams(ctx.body.query), ctx.body.nonce);
+              if (!finished.ok) return finished;
+              const { did } = finished;
+              const key = { providerId: PROVIDER_ID, accountId: did };
+              let userId = (await adapter.findAccountByKey(key))?.userId;
+              if (userId === undefined) {
+                try {
+                  const created = await adapter.createOAuthUser(
+                    { name: "", email: placeholderEmail(did), emailVerified: false },
+                    { providerId: PROVIDER_ID, accountId: did },
+                  );
+                  userId = created.user.id;
+                } catch (cause) {
+                  // A second callback for the same new DID created it first; the unique key (migration 0007) refused ours.
+                  userId = (await adapter.findAccountByKey(key))?.userId;
+                  if (userId === undefined) throw cause;
+                }
               }
-            }
-            const session = await adapter.createSession(userId, false, { did });
-            return { ok: true, sessionToken: session.token };
-          }),
+              const session = await adapter.createSession(userId, false, { did });
+              return { ok: true, sessionToken: session.token };
+            },
+          );
+          if (outcome.ok) return outcome;
+          // A refused callback's grant ends only if no session of that account rides on it. Run after the sign-in's
+          // scope, which still held that account's lock.
+          if ("stray" in outcome) {
+            const stray = outcome.stray;
+            const remaining = async () => {
+              const owner = (await adapter.findAccountByKey({ providerId: PROVIDER_ID, accountId: stray }))?.userId;
+              if (owner === undefined) return 0;
+              return (await adapter.listSessions(owner)).filter((s) => (s as { did?: unknown }).did === stray).length;
+            };
+            // A failure here leaves a grant with no session; the next sign-in for that account replaces it.
+            await grant
+              .endIfLast(stray, remaining, ctx.request?.signal ?? AbortSignal.timeout(15_000))
+              .catch(() => undefined);
+          }
+          return { ok: false, reason: outcome.reason };
+        },
       ),
 
       /**

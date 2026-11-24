@@ -15,7 +15,7 @@ import { createOAuthSessionStore, createOAuthStateStore, oauthSessionExists } fr
 import { createPool } from "./adapters/postgres/pool.ts";
 import { createSealer } from "./adapters/seal/index.ts";
 import { backendConfig } from "./config.ts";
-import { createDidResolver, createHandleVerifier } from "./domains/identity/index.ts";
+import { createDidResolver, createHandleVerifier, parseHandle, resolveHandle } from "./domains/identity/index.ts";
 import { createProfiles } from "./domains/profile/operations.ts";
 import { serve } from "./server/serve.ts";
 import { bootOrExit, ConfigError, exitOnConfigError } from "./shared/config/index.ts";
@@ -78,7 +78,16 @@ const { client } = createOAuthClient({
   resolveDid,
   log,
 });
-const grant = createGrant({ client, dropTokenSet: (did) => sessionStore.del(did), scopes: signInLock, log });
+const grant = createGrant({
+  client,
+  dropTokenSet: (did) => sessionStore.del(did),
+  scopes: signInLock,
+  resolveHandle: async (handle) => {
+    const parsed = parseHandle(handle);
+    return parsed === null ? { status: "not_found" } : resolveHandle(network, parsed);
+  },
+  log,
+});
 const auth = createAuth({
   database: authDatabase,
   secret: config.BETTER_AUTH_SECRET,
