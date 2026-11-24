@@ -42,16 +42,34 @@ export type Grant = {
    */
   finish(query: URLSearchParams, nonce: string): Promise<FinishResult>;
   /**
+   * Runs a whole sign-in, from `finish` to its session row, holding the account's lock (sign-in-lock.ts `during`):
+   * the library's delete of the old token set waits for the new one and is dropped, so the account's other sessions
+   * stay, and a last browser's sign-out cannot revoke the new set before its session exists.
+   */
+  signingIn<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * After one browser's session ended: under the account's lock, ends the grant only when `remaining` counts no live
+   * session of `did`. If the lock or the count fails, the grant is ended anyway, so none outlives its last session.
+   */
+  endIfLast(did: Did, remaining: () => Promise<number>, deadline: AbortSignal): Promise<void>;
+  /**
    * Revokes the grant and deletes its token set, which ends every session on it (migration 0007). When the revoke
    * fails or runs out of time, the token set is deleted here; only when that also fails does this throw.
    */
   end(did: Did, deadline: AbortSignal): Promise<void>;
 };
 
+/** The sign-in lock's scopes (sign-in-lock.ts), whose `tokenSets` and `requestLock` the client was built with. */
+export type SignInScopes = {
+  readonly during: <T>(fn: () => Promise<T>) => Promise<T>;
+  readonly exclusive: <T>(did: string, fn: () => Promise<T>) => Promise<T>;
+};
+
 export type GrantOptions = {
   readonly client: Pick<Client, "authorize" | "callback" | "revoke">;
   /** Deletes the stored token set for a DID (the sealed session store's `del`). */
   readonly dropTokenSet: (did: Did) => Promise<void>;
+  readonly scopes: SignInScopes;
   readonly log: Logger;
 };
 
@@ -59,6 +77,15 @@ const className = (cause: unknown): string => (cause instanceof Error && cause.n
 
 export function createGrant(options: GrantOptions): Grant {
   const { client, log } = options;
+  async function end(did: Did, deadline: AbortSignal): Promise<void> {
+    try {
+      // oauth-client 0.9.3 `revoke` (dist/oauth-client.js): calls the revocation endpoint, then deletes the set.
+      await withRevokeTimeout(client.revoke(did), deadline);
+    } catch (cause) {
+      log.warn("oauth.revoke_failed", { kind: className(cause) });
+      await options.dropTokenSet(did);
+    }
+  }
   return {
     async start(handle, nonce, deadline) {
       if (!BROWSER_NONCE.test(nonce)) throw new RangeError("grant.start: the nonce is not 32 bytes of base64url");
@@ -86,14 +113,18 @@ export function createGrant(options: GrantOptions): Grant {
       }
       return { ok: true, did: result.did };
     },
-    async end(did, deadline) {
+    signingIn: (fn) => options.scopes.during(fn),
+    async endIfLast(did, remaining, deadline) {
       try {
-        // oauth-client 0.9.3 `revoke` (dist/oauth-client.js): calls the revocation endpoint, then deletes the set.
-        await withRevokeTimeout(client.revoke(did), deadline);
+        await options.scopes.exclusive(did, async () => {
+          if ((await remaining()) === 0) await end(did, deadline);
+        });
       } catch (cause) {
+        // The old app's review F13: a failed lock or count must not leave a grant with no session.
         log.warn("oauth.revoke_failed", { kind: className(cause) });
-        await options.dropTokenSet(did);
+        await end(did, deadline);
       }
     },
+    end,
   };
 }
