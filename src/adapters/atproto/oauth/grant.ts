@@ -1,6 +1,7 @@
 // The member's atproto grant, as sign-in and sign-out use it: start an authorization, complete it, and end it. It is the
 // one thing the Better Auth `atproto` plugin (src/adapters/auth/) knows of the OAuth client, so the plugin holds no
 // @atproto type and this file holds no Better Auth one.
+import { timingSafeEqual } from "node:crypto";
 import type { Did } from "../../../domains/identity/index.ts";
 import type { Logger } from "../../../shared/log/index.ts";
 import type { createOAuthClient } from "./oauth-client.ts";
@@ -11,24 +12,35 @@ import { type AuthorizeFailure, authorize, type CallbackFailure, completeAuthori
 type Client = ReturnType<typeof createOAuthClient>["client"];
 
 /**
- * The appState every sign-in carries. Web keeps no return path in this slice, so there is nothing to carry, and a
- * callback whose state is not this one was not started by this code.
+ * What binds a sign-in to the browser that started it: a nonce web makes, keeps in that browser's cookie and sends
+ * with both the start and the callback (32 random bytes, base64url). It travels as the library's appState, which the
+ * library keeps sealed in its state store and never sends to the authorization server, as the old app's nonce did
+ * (Undefined6799/unset interfaces/web/src/lib/server/sign-in-state.ts at 60228f5).
  */
-const APP_STATE = "web";
+export const BROWSER_NONCE = /^[A-Za-z0-9_-]{43}$/;
+
+/** Equal nonces, compared in constant time. */
+function sameNonce(a: string, b: string): boolean {
+  const [x, y] = [Buffer.from(a), Buffer.from(b)];
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 export type StartResult =
   | { readonly ok: true; readonly url: string }
   | { readonly ok: false; readonly reason: AuthorizeFailure };
-export type FinishFailure = CallbackFailure | "scope_missing";
+export type FinishFailure = CallbackFailure | "scope_missing" | "state_mismatch";
 export type FinishResult =
   | { readonly ok: true; readonly did: Did }
   | { readonly ok: false; readonly reason: FinishFailure };
 
 export type Grant = {
-  /** The authorization server's URL for `handle`, where web sends the browser. */
-  start(handle: string, deadline: AbortSignal): Promise<StartResult>;
-  /** The DID the server vouched for, with its token set stored; every refusal leaves no grant behind. */
-  finish(query: URLSearchParams): Promise<FinishResult>;
+  /** The authorization server's URL for `handle`, where web sends the browser, bound to `nonce` (BROWSER_NONCE). */
+  start(handle: string, nonce: string, deadline: AbortSignal): Promise<StartResult>;
+  /**
+   * The DID the server vouched for, with its token set stored, only when `nonce` is the one the sign-in started with;
+   * every refusal leaves no grant behind.
+   */
+  finish(query: URLSearchParams, nonce: string): Promise<FinishResult>;
   /**
    * Revokes the grant and deletes its token set, which ends every session on it (migration 0007). When the revoke
    * fails or runs out of time, the token set is deleted here; only when that also fails does this throw.
@@ -48,11 +60,12 @@ const className = (cause: unknown): string => (cause instanceof Error && cause.n
 export function createGrant(options: GrantOptions): Grant {
   const { client, log } = options;
   return {
-    async start(handle, deadline) {
-      const result = await authorize(client, handle, { appState: APP_STATE, deadline, log });
+    async start(handle, nonce, deadline) {
+      if (!BROWSER_NONCE.test(nonce)) throw new RangeError("grant.start: the nonce is not 32 bytes of base64url");
+      const result = await authorize(client, handle, { appState: nonce, deadline, log });
       return result.ok ? { ok: true, url: result.url.href } : result;
     },
-    async finish(query) {
+    async finish(query, nonce) {
       const result = await completeAuthorization(client, query, log);
       if (!result.ok) {
         // A refusal the server explains (consent denied, a page needed) is a failed sign-in here: no retry path yet.
@@ -60,10 +73,11 @@ export function createGrant(options: GrantOptions): Grant {
           ? { ok: false, reason: "failed" }
           : { ok: false, reason: result.reason };
       }
-      if (result.appState !== APP_STATE) {
+      // Another browser's callback (a sign-in CSRF), or one this code did not start: the grant is not kept.
+      if (typeof result.appState !== "string" || !BROWSER_NONCE.test(nonce) || !sameNonce(result.appState, nonce)) {
         log.warn("oauth.callback_failed", { kind: "app_state" });
         await result.revoke();
-        return { ok: false, reason: "failed" };
+        return { ok: false, reason: "state_mismatch" };
       }
       if (!grantCovers(result.scope).ok) {
         log.warn("pds.scope_missing");

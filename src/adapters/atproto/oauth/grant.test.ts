@@ -6,6 +6,9 @@ import type { Logger } from "../../../shared/log/index.ts";
 import { createGrant, type GrantOptions } from "./grant.ts";
 
 const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;
+/** The nonce the browser that started the sign-in holds, and another browser's. */
+const NONCE = `${"A".repeat(42)}Q`;
+const OTHER_NONCE = `${"B".repeat(42)}Q`;
 const log: Logger = { info: () => undefined, warn: () => undefined, error: () => undefined, logError: () => undefined };
 
 /** A library client whose callback answers `state` and `scope`, recording revocations. */
@@ -31,24 +34,47 @@ function client(state: string | null, scope: string) {
 
 describe("grant", () => {
   test("finish_returns_the_did_for_the_full_scope", async () => {
-    const { fake, revoked } = client("web", "atproto repo:sh.unset.profile");
+    const { fake, revoked } = client(NONCE, "atproto repo:sh.unset.profile");
     const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, log });
-    expect(await grant.finish(new URLSearchParams("code=c"))).toEqual({ ok: true, did: DID });
+    expect(await grant.finish(new URLSearchParams("code=c"), NONCE)).toEqual({ ok: true, did: DID });
     expect(revoked).toEqual([]);
   });
 
   test("finish_revokes_a_grant_missing_the_profile_scope", async () => {
-    const { fake, revoked } = client("web", "atproto");
+    const { fake, revoked } = client(NONCE, "atproto");
     const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, log });
-    expect(await grant.finish(new URLSearchParams("code=c"))).toEqual({ ok: false, reason: "scope_missing" });
+    expect(await grant.finish(new URLSearchParams("code=c"), NONCE)).toEqual({ ok: false, reason: "scope_missing" });
     expect(revoked).toEqual(["callback"]);
   });
 
-  test("finish_revokes_a_sign_in_this_code_did_not_start", async () => {
-    const { fake, revoked } = client("other", "atproto repo:sh.unset.profile");
+  test("finish_revokes_a_sign_in_another_browser_started", async () => {
+    // Sign-in CSRF: the callback is real, but its nonce is not the one this browser holds.
+    for (const [stored, held] of [
+      [OTHER_NONCE, NONCE],
+      [NONCE, OTHER_NONCE],
+      ["web", NONCE],
+      [NONCE, "short"],
+      [NONCE, `${NONCE}A`],
+    ] as const) {
+      const { fake, revoked } = client(stored, "atproto repo:sh.unset.profile");
+      const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, log });
+      expect(await grant.finish(new URLSearchParams("code=c"), held)).toEqual({ ok: false, reason: "state_mismatch" });
+      expect(revoked).toEqual(["callback"]);
+    }
+  });
+
+  test("start_carries_the_nonce_as_app_state_and_refuses_a_malformed_one", async () => {
+    let seen: unknown;
+    const fake = {
+      authorize: async (_handle: string, options: { state?: string }) => {
+        seen = options.state;
+        return new URL("https://pds.example/authorize?request_uri=urn%3Aexample");
+      },
+    } as unknown as GrantOptions["client"];
     const grant = createGrant({ client: fake, dropTokenSet: async () => undefined, log });
-    expect(await grant.finish(new URLSearchParams("code=c"))).toEqual({ ok: false, reason: "failed" });
-    expect(revoked).toEqual(["callback"]);
+    expect((await grant.start("alice.example.com", NONCE, AbortSignal.timeout(1000))).ok).toBe(true);
+    expect(seen).toBe(NONCE);
+    expect(grant.start("alice.example.com", "web", AbortSignal.timeout(1000))).rejects.toThrow(RangeError);
   });
 
   test("end_drops_the_token_set_when_the_revoke_fails", async () => {

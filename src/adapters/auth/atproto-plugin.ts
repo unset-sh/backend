@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import type { BetterAuthPlugin, StandardSchemaV1 } from "better-auth";
 import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { type Did, parseDid } from "../../domains/identity/index.ts";
-import type { FinishFailure, Grant, StartResult } from "../atproto/oauth/grant.ts";
+import { BROWSER_NONCE, type FinishFailure, type Grant, type StartResult } from "../atproto/oauth/grant.ts";
 
 export const PROVIDER_ID = "atproto";
 /** The longest handle (https://atproto.com/specs/handle) and the longest callback query web relays. */
@@ -30,20 +30,25 @@ export type CompleteResult =
 export type SignOutResult = { readonly ok: true } | { readonly ok: false; readonly reason: "failed" };
 
 /**
- * A body of one non-empty string field of at most `max` characters, as a Standard Schema (better-call 1.4.5
- * dist/validator.mjs runs `body["~standard"].validate`), so the plugin needs no schema library. The internal API's
- * TypeBox schemas check the same bounds first; this is the plugin's own check.
+ * A body of one non-empty string field of at most `max` characters and the browser's nonce (BROWSER_NONCE), as a
+ * Standard Schema (better-call 1.4.5 dist/validator.mjs runs `body["~standard"].validate`), so the plugin needs no
+ * schema library. The internal API's TypeBox schemas check the same bounds first; this is the plugin's own check.
  */
-function oneString<K extends string>(key: K, max: number): StandardSchemaV1<Record<K, string>> {
+function withNonce<K extends string>(key: K, max: number): StandardSchemaV1<Record<K | "nonce", string>> {
   return {
     "~standard": {
       version: 1,
       vendor: "unset",
       validate(value) {
-        const field = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
-        return typeof field === "string" && field.length > 0 && field.length <= max
-          ? { value: { [key]: field } as Record<K, string> }
-          : { issues: [{ message: `${key}: a string of 1 to ${max} characters` }] };
+        const body = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+        const [field, nonce] = [body[key], body.nonce];
+        if (typeof field !== "string" || field.length === 0 || field.length > max) {
+          return { issues: [{ message: `${key}: a string of 1 to ${max} characters` }] };
+        }
+        if (typeof nonce !== "string" || !BROWSER_NONCE.test(nonce)) {
+          return { issues: [{ message: "nonce: 32 bytes of base64url" }] };
+        }
+        return { value: { [key]: field, nonce } as Record<K | "nonce", string> };
       },
     },
   };
@@ -55,18 +60,18 @@ export function atproto(grant: Grant) {
     endpoints: {
       /** Starts a sign-in for a handle and answers the authorization server's URL. */
       atprotoSignIn: createAuthEndpoint.serverOnly(
-        { method: "POST", body: oneString("handle", HANDLE_MAX) },
+        { method: "POST", body: withNonce("handle", HANDLE_MAX) },
         async (ctx): Promise<StartResult> =>
-          grant.start(ctx.body.handle, ctx.request?.signal ?? AbortSignal.timeout(15_000)),
+          grant.start(ctx.body.handle, ctx.body.nonce, ctx.request?.signal ?? AbortSignal.timeout(15_000)),
       ),
       /**
        * Completes a sign-in from the callback's query: the account found by its DID, or a new user and account, then a
        * session on that DID's token set. Matching is on the DID alone (`providerId` atproto, `accountId` the DID).
        */
       atprotoCallback: createAuthEndpoint.serverOnly(
-        { method: "POST", body: oneString("query", QUERY_MAX) },
+        { method: "POST", body: withNonce("query", QUERY_MAX) },
         async (ctx): Promise<CompleteResult> => {
-          const finished = await grant.finish(new URLSearchParams(ctx.body.query));
+          const finished = await grant.finish(new URLSearchParams(ctx.body.query), ctx.body.nonce);
           if (!finished.ok) return finished;
           const { did } = finished;
           const adapter = ctx.context.internalAdapter;

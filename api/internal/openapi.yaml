@@ -20,8 +20,12 @@ paths:
                   maxLength: 253
                   minLength: 1
                   type: string
+                nonce:
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  type: string
               required:
                 - handle
+                - nonce
               type: object
         required: true
       responses:
@@ -226,12 +230,16 @@ paths:
             schema:
               additionalProperties: false
               properties:
+                nonce:
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  type: string
                 query:
                   maxLength: 4096
                   minLength: 1
                   type: string
               required:
                 - query
+                - nonce
               type: object
         required: true
       responses:
@@ -259,6 +267,7 @@ paths:
                     enum:
                       - consent_denied
                       - expired
+                      - state_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing
@@ -372,6 +381,7 @@ paths:
                     enum:
                       - consent_denied
                       - expired
+                      - state_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing
@@ -403,6 +413,7 @@ paths:
                     enum:
                       - consent_denied
                       - expired
+                      - state_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing

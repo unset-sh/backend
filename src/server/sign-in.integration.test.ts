@@ -33,6 +33,9 @@ const log = createLogger({
 });
 let app: ReturnType<typeof createServer>;
 let closeAuth: () => Promise<void>;
+/** The nonce the signing-in browser holds, and another browser's. */
+const NONCE = `${"A".repeat(42)}Q`;
+const OTHER_NONCE = `${"B".repeat(42)}Q`;
 /** Every token a test was handed, for the log check. */
 const tokens: string[] = [];
 const ended: Did[] = [];
@@ -43,11 +46,13 @@ const ended: Did[] = [];
  */
 function standInGrant(store: ReturnType<typeof createOAuthSessionStore>): Grant {
   return {
-    start: async (handle) =>
-      handle === HANDLE_A
+    start: async (handle, nonce) =>
+      handle === HANDLE_A && nonce === NONCE
         ? { ok: true, url: "https://pds.example/oauth/authorize?request_uri=x" }
         : { ok: false, reason: "handle_unverified" },
-    async finish(query): Promise<FinishResult> {
+    async finish(query, nonce): Promise<FinishResult> {
+      // The real grant compares the nonce with the one the sign-in started with (grant.test.ts).
+      if (nonce !== NONCE) return { ok: false, reason: "state_mismatch" };
       const did = parseDid(query.get("sub") ?? "");
       if (did === null) return { ok: false, reason: "expired" };
       await store.set(did, { authMethod: { method: "none" }, tokenSet: { sub: did } } as never);
@@ -99,7 +104,7 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 /** A complete sign-in for `did`: the session token web would keep. */
 async function signIn(did: Did): Promise<string> {
   const response = await call("POST", "/auth/sign-in/atproto/callback", {
-    body: { query: `code=c&state=s&sub=${did}` },
+    body: { query: `code=c&state=s&sub=${did}`, nonce: NONCE },
   });
   expect(response.status).toBe(200);
   const { sessionToken } = (await response.json()) as { sessionToken: string };
@@ -122,10 +127,12 @@ describe("sign-in and session", () => {
   });
 
   test("start answers the authorization server's URL; an unverified handle is refused", async () => {
-    const ok = await call("POST", "/auth/sign-in/atproto", { body: { handle: HANDLE_A } });
+    const ok = await call("POST", "/auth/sign-in/atproto", { body: { handle: HANDLE_A, nonce: NONCE } });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ url: "https://pds.example/oauth/authorize?request_uri=x" });
-    const refused = await call("POST", "/auth/sign-in/atproto", { body: { handle: "mallory.example.com" } });
+    const refused = await call("POST", "/auth/sign-in/atproto", {
+      body: { handle: "mallory.example.com", nonce: NONCE },
+    });
     expect(refused.status).toBe(400);
     expect(refused.headers.get("content-type")).toBe("application/problem+json");
     expect(await refused.json()).toEqual({
@@ -135,7 +142,7 @@ describe("sign-in and session", () => {
       code: "handle_unverified",
     });
     // A body that breaks the schema is a problem too, and does not echo the input.
-    const invalid = await call("POST", "/auth/sign-in/atproto", { body: { handle: "" } });
+    const invalid = await call("POST", "/auth/sign-in/atproto", { body: { handle: "", nonce: NONCE } });
     expect(invalid.status).toBe(422);
     expect(invalid.headers.get("content-type")).toBe("application/problem+json");
     expect(await invalid.json()).toEqual({
@@ -145,14 +152,27 @@ describe("sign-in and session", () => {
       code: "invalid_request",
     });
     // A field the contract does not name is dropped before the handler runs (Elysia 1.4.32 normalises bodies).
-    const extra = await call("POST", "/auth/sign-in/atproto", { body: { handle: "mallory.example.com", did: DID_B } });
+    const extra = await call("POST", "/auth/sign-in/atproto", {
+      body: { handle: "mallory.example.com", nonce: NONCE, did: DID_B },
+    });
     expect(((await extra.json()) as { code: string }).code).toBe("handle_unverified");
   });
 
   test("a failed callback makes no session", async () => {
-    const response = await call("POST", "/auth/sign-in/atproto/callback", { body: { query: "code=c&state=unknown" } });
+    const response = await call("POST", "/auth/sign-in/atproto/callback", {
+      body: { query: "code=c&state=unknown", nonce: NONCE },
+    });
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ type: "about:blank", title: "Bad Request", status: 400, code: "expired" });
+    expect(await admin("SELECT count(*) FROM auth.session")).toBe("0");
+  });
+
+  test("a callback with another browser's nonce makes no session", async () => {
+    const response = await call("POST", "/auth/sign-in/atproto/callback", {
+      body: { query: `code=c&state=s&sub=${DID_A}`, nonce: OTHER_NONCE },
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { code: string }).code).toBe("state_mismatch");
     expect(await admin("SELECT count(*) FROM auth.session")).toBe("0");
   });
 
