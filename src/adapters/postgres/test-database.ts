@@ -8,6 +8,11 @@
 // nothing else, with a password only this run knows.
 import { randomBytes } from "node:crypto";
 import { SQL } from "bun";
+import { createLogger } from "../../shared/log/index.ts";
+import type { Connection } from "./config.ts";
+import { migrate } from "./migrate.ts";
+import { MIGRATIONS } from "./migrate-cli.ts";
+import { createPool, type Pool } from "./pool.ts";
 
 const env = process.env;
 
@@ -38,8 +43,19 @@ export type TestPostgres = {
   readonly createDatabase: () => Promise<string>;
   /** Runs `text` as the superuser in `database`; rows as `a|b` lines joined by newlines, like `psql -At`. */
   readonly sql: (database: string, text: string) => Promise<string>;
+  /** A new database with the repository's migrations applied, as the migrate image applies them. */
+  readonly migratedDatabase: () => Promise<string>;
+  /**
+   * A pool on `database` as a runtime role, as its process connects. The role gets a password only this run knows;
+   * roles are cluster-global, so it is set once per run and every pool of the run shares it.
+   */
+  readonly connectAs: (database: string, role: RuntimeRole, max?: number) => Promise<Pool>;
+  /** The connection settings `connectAs` uses, for a client that is not Bun.sql (Better Auth's pg pool). */
+  readonly connectionAs: (database: string, role: RuntimeRole) => Promise<Connection>;
   readonly stop: () => Promise<void>;
 };
+
+export type RuntimeRole = "backend" | "backend_auth";
 
 /** Connects as the superuser, (re)creates `migrator` with a fresh password, and tracks the databases it makes. */
 export async function startTestPostgres(): Promise<TestPostgres> {
@@ -64,18 +80,55 @@ export async function startTestPostgres(): Promise<TestPostgres> {
       await client.close();
     }
   };
+  const host = env.PGHOST ?? "";
+  const port = Number(env.PGPORT ?? 5432);
+  const createDatabase = async () => {
+    const name = `t_${randomBytes(8).toString("hex")}`;
+    await admin.unsafe(`CREATE DATABASE ${name} OWNER migrator`);
+    databases.push(name);
+    return name;
+  };
+  const passwords = new Map<RuntimeRole, string>();
+  const pools: Pool[] = [];
+  const connectionAs = async (database: string, role: RuntimeRole): Promise<Connection> => {
+    let password = passwords.get(role);
+    if (password === undefined) {
+      password = randomPassword();
+      await admin.unsafe(`ALTER ROLE ${role} PASSWORD '${password}'`);
+      passwords.set(role, password);
+    }
+    return { hostname: host, port, database, username: role, password, tls: false };
+  };
+  const silent = createLogger({ service: "migrate", commit: "0".repeat(40), env: "test", write: () => undefined });
   return {
-    host: env.PGHOST ?? "",
-    port: Number(env.PGPORT ?? 5432),
+    host,
+    port,
     migratorPassword,
-    createDatabase: async () => {
-      const name = `t_${randomBytes(8).toString("hex")}`;
-      await admin.unsafe(`CREATE DATABASE ${name} OWNER migrator`);
-      databases.push(name);
-      return name;
-    },
+    createDatabase,
     sql,
+    migratedDatabase: async () => {
+      const database = await createDatabase();
+      const connection = {
+        hostname: host,
+        port,
+        database,
+        username: "migrator",
+        password: migratorPassword,
+        tls: false as const,
+      };
+      const result = await migrate({ connection, ...MIGRATIONS, log: silent, retryDelaysMs: [] });
+      if (!result.ok) throw new Error(`test migrations failed: ${result.reason}`);
+      return database;
+    },
+    connectionAs,
+    connectAs: async (database, role, max = 4) => {
+      const connection = await connectionAs(database, role);
+      const pool = createPool({ connection, service: "test", max, connectTimeoutS: 5 });
+      pools.push(pool);
+      return pool;
+    },
     stop: async () => {
+      for (const pool of pools) await pool.close();
       for (const name of databases) await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       await admin.close();
     },

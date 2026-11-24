@@ -6,6 +6,274 @@ info:
   version: 0.0.0
 openapi: 3.1.2
 paths:
+  /auth/atproto/callback:
+    post:
+      operationId: postAuthAtprotoCallback
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                query:
+                  maxLength: 4096
+                  minLength: 1
+                  type: string
+              required:
+                - query
+              type: object
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  sessionToken:
+                    minLength: 1
+                    type: string
+                required:
+                  - sessionToken
+                type: object
+          description: Response for status 200
+        "400":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: consent_denied
+                    enum:
+                      - consent_denied
+                      - expired
+                      - pds_unreachable
+                      - failed
+                      - scope_missing
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 400
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: untrusted_origin
+                    enum:
+                      - untrusted_origin
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 403
+        "502":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: consent_denied
+                    enum:
+                      - consent_denied
+                      - expired
+                      - pds_unreachable
+                      - failed
+                      - scope_missing
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 502
+        "503":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: consent_denied
+                    enum:
+                      - consent_denied
+                      - expired
+                      - pds_unreachable
+                      - failed
+                      - scope_missing
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 503
+      summary: "Complete a sign-in from the callback query: a session token"
+      tags:
+        - auth
+  /auth/sign-in/atproto:
+    post:
+      operationId: postAuthSign-inAtproto
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                handle:
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+              required:
+                - handle
+              type: object
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  url:
+                    format: uri
+                    type: string
+                required:
+                  - url
+                type: object
+          description: Response for status 200
+        "400":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: handle_unverified
+                    enum:
+                      - handle_unverified
+                      - handle_not_found
+                      - identity_unavailable
+                      - pds_unreachable
+                      - failed
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 400
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: untrusted_origin
+                    enum:
+                      - untrusted_origin
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 403
+        "502":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: handle_unverified
+                    enum:
+                      - handle_unverified
+                      - handle_not_found
+                      - identity_unavailable
+                      - pds_unreachable
+                      - failed
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 502
+        "503":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: handle_unverified
+                    enum:
+                      - handle_unverified
+                      - handle_not_found
+                      - identity_unavailable
+                      - pds_unreachable
+                      - failed
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 503
+      summary: "Start a sign-in: the authorization server's URL for a handle"
+      tags:
+        - auth
+  /auth/sign-out:
+    post:
+      operationId: postAuthSign-out
+      responses:
+        "204":
+          content:
+            type: undefined
+          description: Response for status 204
+        "401":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: no_session
+                    enum:
+                      - no_session
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 401
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: untrusted_origin
+                    enum:
+                      - untrusted_origin
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 403
+        "503":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: failed
+                    enum:
+                      - failed
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 503
+      summary: End the caller's session and revoke the grant it rides on, which ends its other sessions too
+      tags:
+        - auth
   /health:
     get:
       operationId: getHealth
@@ -17,6 +285,7 @@ paths:
                 additionalProperties: false
                 properties:
                   status:
+                    default: ok
                     enum:
                       - ok
                       - unavailable
@@ -32,6 +301,7 @@ paths:
                 additionalProperties: false
                 properties:
                   status:
+                    default: ok
                     enum:
                       - ok
                       - unavailable
@@ -43,3 +313,53 @@ paths:
       summary: "Readiness: whether backend can serve requests now"
       tags:
         - operations
+  /me/session:
+    get:
+      operationId: getMeSession
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  did:
+                    minLength: 1
+                    type: string
+                required:
+                  - did
+                type: object
+          description: Response for status 200
+        "401":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: no_session
+                    enum:
+                      - no_session
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 401
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  reason:
+                    default: untrusted_origin
+                    enum:
+                      - untrusted_origin
+                    type: string
+                required:
+                  - reason
+                type: object
+          description: Response for status 403
+      summary: "The caller's session: whose it is"
+      tags:
+        - auth

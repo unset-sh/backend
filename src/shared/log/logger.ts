@@ -80,6 +80,10 @@ const EVENTS = [
   "oauth.revoke_failed",
   // P2.08b, the issuer recorded at sign-in could not be read at sign-out; `kind` is the class name. No DID.
   "auth.logout_issuer_unknown",
+  // Better Auth (src/adapters/auth/): a message from the library at warn or above (its level as kind, never the
+  // message, which can carry request data), and an idle connection of its pg pool that failed (the class as kind).
+  "auth.library",
+  "auth.database_error",
   // P2.12, the age gate. `kind` is the audit lane or an error class; `count` is the audit sequence. No DID.
   "age_gate.hosted_block",
   "age_gate.block_failed",

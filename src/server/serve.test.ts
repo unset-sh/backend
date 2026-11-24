@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createLogger } from "../shared/log/index.ts";
 import { createServer } from "./serve.ts";
+import { testDeps } from "./test-deps.ts";
 
 function capture() {
   const lines: string[] = [];
@@ -15,7 +16,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 describe("request log", () => {
   test("one line per response, with the route template", async () => {
     const { log, records } = capture();
-    const app = createServer({ ready: async () => false }, log);
+    const app = createServer(testDeps({ ready: async () => false }), log);
     const response = await app.handle(new Request("http://backend/health"));
     await settle();
     expect(response.status).toBe(503);
@@ -26,7 +27,7 @@ describe("request log", () => {
 
   test("an unmatched path is logged without the path", async () => {
     const { log, records } = capture();
-    const app = createServer({ ready: async () => true }, log);
+    const app = createServer(testDeps({ ready: async () => true }), log);
     await app.handle(new Request("http://backend/did:plc:abcdefghijklmnopqrstuvwx/alice.example.com"));
     await settle();
     const text = JSON.stringify(records());
