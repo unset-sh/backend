@@ -56,7 +56,13 @@ function standInGrant(store: ReturnType<typeof createOAuthSessionStore>, lockPoo
       await lock.tokenSets.del(did);
     },
   };
-  const real = createGrant({ client: client as never, dropTokenSet: (did) => store.del(did), scopes: lock, log });
+  const real = createGrant({
+    client: client as never,
+    dropTokenSet: (did) => store.del(did),
+    scopes: lock,
+    resolveHandle: async () => ({ status: "not_found" }),
+    log,
+  });
   return {
     ...real,
     start: async (handle, nonce) =>
@@ -64,12 +70,13 @@ function standInGrant(store: ReturnType<typeof createOAuthSessionStore>, lockPoo
         ? { ok: true, url: "https://pds.example/oauth/authorize?request_uri=x" }
         : { ok: false, reason: "handle_unverified" },
     async finish(query, nonce): Promise<FinishResult> {
-      // The real grant compares the nonce with the one the sign-in started with (grant.test.ts).
-      if (nonce !== NONCE) return { ok: false, reason: "state_mismatch" };
       const did = parseDid(query.get("sub") ?? "");
       if (did === null) return { ok: false, reason: "expired" };
       await lock.tokenSets.del(did);
       await lock.tokenSets.set(did, { authMethod: { method: "none" }, tokenSet: { sub: did } } as never);
+      // The real grant compares the sealed nonce and DID with this browser's (grant.test.ts); the library has stored
+      // the server's grant by then, so a refusal names it.
+      if (nonce !== NONCE) return { ok: false, reason: "state_mismatch", stray: did };
       return { ok: true, did };
     },
   };
@@ -177,13 +184,16 @@ describe("sign-in and session", () => {
     expect(await admin("SELECT count(*) FROM auth.session")).toBe("0");
   });
 
-  test("a callback with another browser's nonce makes no session", async () => {
+  test("a callback with another browser's nonce makes no session, and its grant ends with no session on it", async () => {
+    ended.length = 0;
     const response = await call("POST", "/auth/sign-in/atproto/callback", {
       body: { query: `code=c&state=s&sub=${DID_A}`, nonce: OTHER_NONCE },
     });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { code: string }).code).toBe("state_mismatch");
     expect(await admin("SELECT count(*) FROM auth.session")).toBe("0");
+    expect(ended).toEqual([DID_A]);
+    expect(await oauthSessionExists(backend, DID_A)).toBe(false);
   });
 
   test("a token for one DID never reads another DID's session", async () => {
@@ -247,6 +257,17 @@ describe("sign-in and session", () => {
     const second = await signIn(DID_A);
     expect(await whoami(first)).toBe(DID_A);
     expect(await whoami(second)).toBe(DID_A);
+  });
+
+  test("a refused callback for a signed-in account leaves its sessions and grant", async () => {
+    const token = await signIn(DID_A);
+    ended.length = 0;
+    const response = await call("POST", "/auth/sign-in/atproto/callback", {
+      body: { query: `code=c&state=s&sub=${DID_A}`, nonce: OTHER_NONCE },
+    });
+    expect(((await response.json()) as { code: string }).code).toBe("state_mismatch");
+    expect(await whoami(token)).toBe(DID_A);
+    expect(ended).toEqual([]);
   });
 
   test("two sign-ins at once both keep their sessions", async () => {

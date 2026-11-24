@@ -141,7 +141,7 @@ declare function routes(): import("elysia").default<"", {
                                 type: "about:blank";
                                 title: "Bad Request";
                                 status: 400;
-                                code: "consent_denied" | "expired" | "failed" | "invalid_request" | "pds_unreachable" | "scope_missing" | "state_mismatch";
+                                code: "account_mismatch" | "consent_denied" | "expired" | "failed" | "invalid_request" | "pds_unreachable" | "scope_missing" | "state_mismatch";
                             };
                             403: {
                                 type: "about:blank";
@@ -159,13 +159,13 @@ declare function routes(): import("elysia").default<"", {
                                 type: "about:blank";
                                 title: "Bad Gateway";
                                 status: 502;
-                                code: "consent_denied" | "expired" | "failed" | "pds_unreachable" | "scope_missing" | "state_mismatch";
+                                code: "account_mismatch" | "consent_denied" | "expired" | "failed" | "pds_unreachable" | "scope_missing" | "state_mismatch";
                             };
                             503: {
                                 type: "about:blank";
                                 title: "Service Unavailable";
                                 status: 503;
-                                code: "consent_denied" | "expired" | "failed" | "pds_unreachable" | "scope_missing" | "state_mismatch";
+                                code: "account_mismatch" | "consent_denied" | "expired" | "failed" | "pds_unreachable" | "scope_missing" | "state_mismatch";
                             };
                         };
                     };

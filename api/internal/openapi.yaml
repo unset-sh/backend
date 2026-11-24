@@ -268,6 +268,7 @@ paths:
                       - consent_denied
                       - expired
                       - state_mismatch
+                      - account_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing
@@ -382,6 +383,7 @@ paths:
                       - consent_denied
                       - expired
                       - state_mismatch
+                      - account_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing
@@ -414,6 +416,7 @@ paths:
                       - consent_denied
                       - expired
                       - state_mismatch
+                      - account_mismatch
                       - pds_unreachable
                       - failed
                       - scope_missing
