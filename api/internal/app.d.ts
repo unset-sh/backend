@@ -308,7 +308,7 @@ declare function routes(): import("elysia").default<"", {
                         type: "about:blank";
                         title: "Forbidden";
                         status: 403;
-                        code: "scope_missing" | "untrusted_origin";
+                        code: "forbidden" | "scope_missing" | "untrusted_origin";
                     };
                     422: {
                         type: 'validation';
@@ -335,7 +335,7 @@ declare function routes(): import("elysia").default<"", {
                         type: "about:blank";
                         title: "Service Unavailable";
                         status: 503;
-                        code: "pds_unreachable";
+                        code: "authorization_unavailable" | "pds_unreachable";
                     };
                 };
             };
@@ -373,7 +373,7 @@ declare function routes(): import("elysia").default<"", {
                         type: "about:blank";
                         title: "Forbidden";
                         status: 403;
-                        code: "scope_missing" | "untrusted_origin";
+                        code: "forbidden" | "scope_missing" | "untrusted_origin";
                     };
                     409: {
                         type: "about:blank";
@@ -397,7 +397,7 @@ declare function routes(): import("elysia").default<"", {
                         type: "about:blank";
                         title: "Service Unavailable";
                         status: 503;
-                        code: "pds_unreachable";
+                        code: "authorization_unavailable" | "pds_unreachable";
                     };
                 };
             };

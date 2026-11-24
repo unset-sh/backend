@@ -1,0 +1,14 @@
+# Who may read and change a profile (agent-kit org-0018). A member may read and update their own; nothing else is
+# allowed yet, so every other request is denied by default. Reading another member's public profile comes with the
+# first route that does it, with its own rule and tests.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: profile
+  rules:
+    - actions: [read, update]
+      effect: EFFECT_ALLOW
+      roles: [member]
+      condition:
+        match:
+          expr: request.resource.attr.ownerDid == request.principal.id

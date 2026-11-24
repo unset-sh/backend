@@ -662,6 +662,7 @@ paths:
                     default: untrusted_origin
                     enum:
                       - untrusted_origin
+                      - forbidden
                       - scope_missing
                     type: string
                   status:
@@ -741,8 +742,9 @@ paths:
                 additionalProperties: false
                 properties:
                   code:
-                    default: pds_unreachable
+                    default: authorization_unavailable
                     enum:
+                      - authorization_unavailable
                       - pds_unreachable
                     type: string
                   status:
@@ -867,6 +869,7 @@ paths:
                     default: untrusted_origin
                     enum:
                       - untrusted_origin
+                      - forbidden
                       - scope_missing
                     type: string
                   status:
@@ -1001,8 +1004,9 @@ paths:
                 additionalProperties: false
                 properties:
                   code:
-                    default: pds_unreachable
+                    default: authorization_unavailable
                     enum:
+                      - authorization_unavailable
                       - pds_unreachable
                     type: string
                   status:

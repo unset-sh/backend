@@ -59,7 +59,13 @@ describe("the build context", () => {
       "!bunfig.toml",
       "!tsconfig.json",
       "!src/",
+      "!policies/",
     ]);
+  });
+
+  test("holds the policies but not their tests", () => {
+    expect(included("policies/profile.yaml")).toBe(true);
+    expect(included("policies/tests/profile_test.yaml")).toBe(false);
   });
 
   const sources = (readdirSync(join(ROOT, "src"), { recursive: true }) as string[])

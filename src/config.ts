@@ -1,6 +1,7 @@
 // The backend process's configuration: the keys every entrypoint has (UNSET_ENV, UNSET_SERVICE, UNSET_COMMIT,
 // LISTEN_PORT) and those of each dependency it builds. A missing or invalid key refuses boot (exit 78). Secrets come
 // only from `<KEY>_FILE` files, which Alex places (agent-kit rules/org.md "Keys, tokens and secrets").
+import { cerbosFields } from "./adapters/cerbos/index.ts";
 import { poolFields, postgresFields } from "./adapters/postgres/config.ts";
 import { sealFields } from "./adapters/seal/index.ts";
 import {
@@ -49,6 +50,7 @@ export const backendConfig = defineEntrypointConfig({
   /** The advisory lock's own pool (lock.ts), so waiting on a lock never takes a connection from queries. */
   LOCK_POOL_MAX: int({ min: 1, max: 20, default: 4 }),
   ...sealFields,
+  ...cerbosFields,
   /** Signs the session token the bearer plugin accepts (Better Auth `secret`). */
   BETTER_AUTH_SECRET: secretFile({ minBytes: 32 }),
   WEB_ORIGIN: withRule(origin({ protocols: ["http:"] }), (config) => LOOPBACK_ORIGIN.test(String(config.WEB_ORIGIN))),

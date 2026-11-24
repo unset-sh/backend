@@ -2,6 +2,7 @@
 // Its route schemas are the contract; scripts/openapi.ts writes them to api/internal/openapi.yaml. A public API, when
 // there is one, is a separate group with its own contract, never added here.
 import { Elysia, ElysiaCustomStatusResponse, t } from "elysia";
+import { type Authorizer, ownProfile, principalOf } from "../domains/access/index.ts";
 import type { Did } from "../domains/identity/index.ts";
 import { PROBLEM_CONTENT_TYPE, Problem, problem } from "./problem.ts";
 
@@ -43,6 +44,8 @@ export type InternalApiDeps = {
   readonly ready: () => Promise<boolean>;
   readonly sessions: SessionsPort;
   readonly profiles: ProfilesPort;
+  /** Who may do what (agent-kit org-0018): every route that acts on a resource asks it first. */
+  readonly authorizer: Authorizer;
   /** Web's origin: a request that carries a cookie must come from it (org-0015). */
   readonly webOrigin: string;
 };
@@ -120,8 +123,23 @@ const DisplayNameBody = closed({ displayName: t.String({ maxLength: 640 }) });
 const START_CODES = [...START_FAILURES, "invalid_request"] as const;
 const COMPLETE_CODES = [...COMPLETE_FAILURES, "invalid_request"] as const;
 
+/**
+ * What each route needs before it runs (agent-kit org-0018): `public`, no session; `caller`, a session and nothing
+ * more, for a route that only says who the caller is; or the resource and action the authorizer is asked about.
+ * internal-api.test.ts fails a route missing here, so no route can skip the question.
+ */
+export const ROUTE_ACCESS = {
+  "GET /health": "public",
+  "POST /auth/sign-in/atproto": "public",
+  "POST /auth/sign-in/atproto/callback": "public",
+  "POST /auth/sign-out": "caller",
+  "GET /me/session": "caller",
+  "GET /me/profile": { resource: "profile", action: "read" },
+  "PATCH /me/profile": { resource: "profile", action: "update" },
+} as const;
+
 export function internalApi(deps: InternalApiDeps) {
-  const { sessions, profiles } = deps;
+  const { sessions, profiles, authorizer } = deps;
   return (
     new Elysia({ name: "internal-api" })
       // Every refusal is a problem document (./problem.ts), including the ones Elysia makes: a body that does not
@@ -292,6 +310,9 @@ export function internalApi(deps: InternalApiDeps) {
         async ({ request, status }) => {
           const session = await sessions.current(request.headers);
           if (session === null) return status(401, problem(401, "no_session"));
+          const decision = await authorizer.may(principalOf(session), "read", ownProfile(session.did));
+          if (decision === "unavailable") return status(503, problem(503, "authorization_unavailable"));
+          if (decision === "deny") return status(403, problem(403, "forbidden"));
           const result = await profiles.get(session.did);
           if (result.ok) return result.profile;
           switch (result.reason) {
@@ -309,9 +330,9 @@ export function internalApi(deps: InternalApiDeps) {
           response: {
             200: ProfileBody,
             401: Problem(401, ["no_session", "session_ended"]),
-            403: Problem(403, ["untrusted_origin", "scope_missing"]),
+            403: Problem(403, ["untrusted_origin", "forbidden", "scope_missing"]),
             502: Problem(502, ["failed"]),
-            503: Problem(503, ["pds_unreachable"]),
+            503: Problem(503, ["authorization_unavailable", "pds_unreachable"]),
             ...ALWAYS,
           },
           detail: {
@@ -330,6 +351,9 @@ export function internalApi(deps: InternalApiDeps) {
         async ({ request, body, status }) => {
           const session = await sessions.current(request.headers);
           if (session === null) return status(401, problem(401, "no_session"));
+          const decision = await authorizer.may(principalOf(session), "update", ownProfile(session.did));
+          if (decision === "unavailable") return status(503, problem(503, "authorization_unavailable"));
+          if (decision === "deny") return status(403, problem(403, "forbidden"));
           const result = await profiles.setDisplayName(session.did, body.displayName);
           if (result.ok) return result.profile;
           const { reason } = result;
@@ -357,10 +381,10 @@ export function internalApi(deps: InternalApiDeps) {
             200: ProfileBody,
             400: Problem(400, ["name_invalid", "name_too_long", "invalid_request"]),
             401: Problem(401, ["no_session", "session_ended"]),
-            403: Problem(403, ["untrusted_origin", "scope_missing"]),
+            403: Problem(403, ["untrusted_origin", "forbidden", "scope_missing"]),
             409: Problem(409, ["conflict"]),
             502: Problem(502, ["record_invalid", "failed"]),
-            503: Problem(503, ["pds_unreachable"]),
+            503: Problem(503, ["authorization_unavailable", "pds_unreachable"]),
             ...WITH_BODY,
           },
           detail: {

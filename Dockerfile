@@ -22,6 +22,9 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY package.json bunfig.toml tsconfig.json ./
 # The sources, migrations and lexicon copy; .dockerignore keeps the tests and fakes out.
 COPY src /app/src
+# The authorization policies, without their tests (agent-kit org-0018, org-0019). Deployment mounts this folder of
+# this image into the Cerbos PDP, so one image digest selects the code and the policies it was tested with.
+COPY policies /app/policies
 # The base runs as root; neither process needs it.
 USER 65532:65532
 EXPOSE 8080

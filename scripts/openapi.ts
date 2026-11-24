@@ -22,6 +22,7 @@ export function internalSpec(): string {
     webOrigin: "http://127.0.0.1:8080",
     sessions: { start: unserved, complete: unserved, current: unserved, signOut: unserved },
     profiles: { get: unserved, setDisplayName: unserved },
+    authorizer: { may: unserved, ready: unserved },
   });
   const { paths, components } = toOpenAPISchema(app, undefined, undefined, undefined, OPENAPI_VERSION);
   labelProblems(paths);

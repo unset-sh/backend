@@ -1,0 +1,44 @@
+# `bun run policies` runs these (cerbos compile, docs/modules/policies/pages/compile.adoc at cerbos v0.57.0).
+name: ProfileTestSuite
+description: A member reads and updates their own profile and no one else's; a caller with no session gets nothing.
+principals:
+  owner:
+    id: did:plc:owner
+    roles: [member]
+  other:
+    id: did:plc:other
+    roles: [member]
+  anonymous:
+    id: anonymous
+    roles: [anonymous]
+resources:
+  owners_profile:
+    kind: profile
+    id: did:plc:owner
+    attr:
+      ownerDid: did:plc:owner
+tests:
+  - name: Only the owner reads and updates their profile
+    input:
+      principals: [owner, other, anonymous]
+      resources: [owners_profile]
+      actions: [read, update, delete]
+    expected:
+      - principal: owner
+        resource: owners_profile
+        actions:
+          read: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_DENY
+      - principal: other
+        resource: owners_profile
+        actions:
+          read: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+      - principal: anonymous
+        resource: owners_profile
+        actions:
+          read: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
