@@ -70,7 +70,8 @@ The commands are in [CLAUDE.md](CLAUDE.md#commands): `bun run check` runs the ty
 boundaries, tests and the internal API contract's drift check.
 Maintained guides belong under `docs/` when needed. AI task notes and review artifacts belong in agent-kit.
 CI runs tooling's Bun check. The image builds from the [`Dockerfile`](Dockerfile): one image for the server and the
-one-shot migration, with no secret in it. Publishing it waits for tooling's image workflow. Agent-kit installation,
+one-shot migration, with no secret in it. Each merge into `staging` pushes it by digest to
+`ghcr.io/unset-sh/staging/backend`, attested, through tooling's staging image workflow. Agent-kit installation,
 releases and automatic consumer adoption remain pending.
 
 ## Licence

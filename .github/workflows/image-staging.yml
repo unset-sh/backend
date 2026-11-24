@@ -1,0 +1,20 @@
+name: staging image
+
+# Each merge into staging builds the Dockerfile, pushes the image by digest to ghcr.io/unset-sh/staging/backend and
+# attests its provenance, through tooling's shared workflow (docs/build-staging-images.md there). Deployment pins
+# the digest and verifies the attestation. Alex decided the workflow and its permissions on 2026-11-23.
+
+on:
+  push:
+    branches: [staging]
+
+permissions: {}
+
+jobs:
+  image:
+    uses: unset-sh/tooling/.github/workflows/image-staging.yml@45975f0c7a9ef3d20a0cd2cba531288ac8bf2f90 # main, 2026-11-24, unreleased 0.0.0
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
