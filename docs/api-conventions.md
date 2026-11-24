@@ -12,8 +12,7 @@ contract itself is the route schemas in `src/server/`, and `api/internal/openapi
 (`bun run openapi`). This page covers what the schemas cannot show: how a route gets its name and its answers.
 
 Status: agreed with Alex on 2026-11-23 (problem+json errors, `/me`, `/users/:did`, the member id and the Better
-Auth wrappers below). Nothing here is checked automatically yet. The step 7 routes still answer `{reason}`, and
-the callback still sits at `/auth/atproto/callback`, until the next change moves them.
+Auth wrappers below). The routes follow it; nothing checks the naming rules automatically yet.
 
 ## Two groups, two contracts
 
