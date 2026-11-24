@@ -31,6 +31,8 @@ const EVENTS = [
   "migrate.database_ahead",
   "migrate.failed",
   "migrate.done",
+  // The runtime roles' passwords set from their secret files after the migrations (the count of roles, never a name).
+  "migrate.passwords_set",
   // P1.23, the island renderer: in production an island's props were over its byte limit, so it rendered static
   // (logged with the island name only).
   "island.props_too_large",
