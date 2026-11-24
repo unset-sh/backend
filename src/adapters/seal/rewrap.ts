@@ -4,13 +4,12 @@ import { SealError } from "./error.ts";
 import { type Keys, unwrapDek, wrapDek } from "./seal.ts";
 
 /**
- * `sealed` (an `s1` value, or an `s1c` header line without its newline) with its DEK wrapped by the active key.
+ * `sealed` (an `s1` value) with its DEK wrapped by the active key.
  * A value already under the active key comes back unchanged.
  */
 export function rewrap(keys: Keys, sealed: string): string {
   const parts = sealed.split(".");
-  const shape = (parts[0] === "s1" && parts.length === 6) || (parts[0] === "s1c" && parts.length === 5);
-  if (!shape) throw new SealError("seal.format");
+  if (parts[0] !== "s1" || parts.length !== 6) throw new SealError("seal.format");
   const [form, kid, wrapIv, wrapped, ...data] = parts as [string, string, string, string, ...string[]];
   const dek = unwrapDek(keys, kid, wrapIv, wrapped);
   if (kid === keys.keyring.active) return sealed;

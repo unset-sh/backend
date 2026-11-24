@@ -1,12 +1,13 @@
 // P1.14: the `s1` envelope, the keyring, contexts, rotation and the per-kid count. The known answer was computed
 // independently with Python's `cryptography` 49.0.0 AESGCM (scratch script, not committed), so the format is pinned
 // against a second implementation, not against this one.
+
+import { describe, expect, test, vi } from "bun:test";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
-import { ConfigError, defineConfig, loadConfig } from "@unset/shared-config";
-import { describe, expect, test, vi } from "vitest";
+import { ConfigError, defineConfig, loadConfig } from "../../shared/config/index.ts";
 import { type SealContext, sealContext } from "./context.ts";
 import { SealError } from "./error.ts";
 import { type Keyring, keyringFile, parseKeyring, sealFields } from "./keyring.ts";
@@ -77,13 +78,13 @@ describe("seal", () => {
       ).toBe("seal.format");
     }
     const typed: SealContext = sealContext("app.t.c", "1");
-    expect(typed).toBe("app.t.c|1");
+    expect<unknown>(typed).toBe("app.t.c|1");
   });
 
   test("context_rowkey_rules", () => {
     for (const rowKey of ["", "a|b", "tab\there", "é"]) expect(() => sealContext("app.t.c", rowKey), rowKey).toThrow();
     for (const column of ["t.c", "app.t.c.d", "App.t.c", "app.t.c|x"]) expect(() => sealContext(column, "1")).toThrow();
-    expect(sealContext("app.t.c", "did:plc:abc 1~")).toBe("app.t.c|did:plc:abc 1~");
+    expect<unknown>(sealContext("app.t.c", "did:plc:abc 1~")).toBe("app.t.c|did:plc:abc 1~");
   });
 
   test.each([2, 3, 4, 5])("tamper_each_part %i", (part) => {

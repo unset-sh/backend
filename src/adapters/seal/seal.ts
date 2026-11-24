@@ -78,7 +78,7 @@ export function unwrapDek(keys: Keys, kid: string, wrapIv: string, wrapped: stri
   return decrypt(kek, unb64(wrapIv, IV_BYTES), unb64(wrapped, KEY_BYTES + TAG_BYTES), WRAP_AAD + kid);
 }
 
-/** `s1.<kid>.<wrapIv>.<wrappedDek+tag>.<iv>.<ciphertext+tag>`; at most 1 MiB of plaintext (larger: `sealStream`). */
+/** `s1.<kid>.<wrapIv>.<wrappedDek+tag>.<iv>.<ciphertext+tag>`; at most 1 MiB of plaintext (streams are not needed yet). */
 export function seal(keys: Keys, plaintext: Uint8Array, context: SealContext): string {
   if (plaintext.length > MAX_PLAINTEXT) throw new SealError("seal.too_large");
   const { dek, wrapParts } = newDek(keys);

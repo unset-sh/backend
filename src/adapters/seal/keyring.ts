@@ -1,7 +1,7 @@
 // The seal keyring (P1.14; plan §5.3): the key-encryption keys, by key id, and which one seals. Read once at boot from
 // the secret file SEAL_KEYRING_FILE, never from plain env; a malformed keyring refuses boot (ConfigError).
 import { inspect } from "node:util";
-import type { Field } from "@unset/shared-config";
+import type { Field } from "../../shared/config/index.ts";
 
 /** A key id: what a sealed value names in its second part. */
 export const KID = /^[a-z0-9]{1,16}$/;

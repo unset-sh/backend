@@ -1,7 +1,8 @@
-// P2.08h: the sealed stores pass GetOptions.signal through to the pool (@atproto-labs/simple-store 0.5.1).
-import { createSealer, parseKeyring } from "@unset/infrastructure-seal";
-import type { Logger } from "@unset/shared-log";
-import { describe, expect, test } from "vitest";
+// P2.08h: the sealed stores honour GetOptions.signal (@atproto-labs/simple-store 0.5.1 dist/simple-store.d.ts): a read
+// or delete past the caller's deadline is refused before its query runs, so it takes no connection.
+import { describe, expect, test } from "bun:test";
+import type { Logger } from "../../shared/log/index.ts";
+import { createSealer, parseKeyring } from "../seal/index.ts";
 import { createOAuthSessionStore, createOAuthStateStore } from "./oauthStores.ts";
 import type { Pool } from "./pool.ts";
 
@@ -11,63 +12,38 @@ const sealer = createSealer(keyring);
 const log: Logger = { info: () => undefined, warn: () => undefined, error: () => undefined, logError: () => undefined };
 const DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
 
+/** A stand-in for Bun.sql's tagged function: each query is lazy, and running one is counted. */
+function countingPool() {
+  const counts = { ran: 0, cancelled: 0 };
+  const pool = (() => ({
+    // biome-ignore lint/suspicious/noThenProperty: a stand-in for Bun's lazy, thenable query object.
+    then: (resolve: (rows: unknown[]) => void) => {
+      counts.ran += 1;
+      resolve([]);
+    },
+    cancel: () => {
+      counts.cancelled += 1;
+    },
+  })) as unknown as Pool;
+  return { pool, counts };
+}
+
 describe("oauth stores", () => {
-  test("get_passes_an_aborted_signal", async () => {
-    let connects = 0;
-    const pool = {
-      connect: () => {
-        connects += 1;
-        return Promise.reject(new Error("should not connect"));
-      },
-    } as unknown as Pool;
+  test("get_and_del_past_the_deadline_run_no_query", async () => {
+    const { pool, counts } = countingPool();
     const signal = AbortSignal.abort();
     const session = createOAuthSessionStore({ pool, sealer, log });
     const state = createOAuthStateStore({ pool, sealer, log });
     await expect(session.get(DID, { signal })).rejects.toMatchObject({ code: "http.deadline" });
     await expect(state.get("state-1", { signal })).rejects.toMatchObject({ code: "http.deadline" });
-    expect(connects).toBe(0);
-  });
-
-  test("del_passes_an_aborted_signal", async () => {
-    // Sign-out's fallback delete (P2.08) runs under the request's deadline, as its own SQL did before P1.21d.
-    let connects = 0;
-    const pool = {
-      connect: () => {
-        connects += 1;
-        return Promise.reject(new Error("should not connect"));
-      },
-    } as unknown as Pool;
-    const signal = AbortSignal.abort();
-    const session = createOAuthSessionStore({ pool, sealer, log });
-    const state = createOAuthStateStore({ pool, sealer, log });
     await expect(session.del(DID, { signal })).rejects.toMatchObject({ code: "http.deadline" });
     await expect(state.del("state-1", { signal })).rejects.toMatchObject({ code: "http.deadline" });
-    expect(connects).toBe(0);
+    expect(counts).toEqual({ ran: 0, cancelled: 4 });
   });
 
-  test("get_ends_a_checked_out_query_on_abort", async () => {
-    // The deadline used to stop waiting while the SELECT still held its client (Codex on #1285). end() runs first,
-    // and the rejection is observed only after release, so the next checkout is not behind that query.
-    const order: string[] = [];
-    let rejectQuery: (error: Error) => void = () => undefined;
-    const client = {
-      query: () =>
-        new Promise<never>((_resolve, reject) => {
-          rejectQuery = reject;
-        }),
-      end: () => {
-        order.push("end");
-        rejectQuery(new Error("Connection terminated"));
-        return Promise.resolve();
-      },
-      release: () => {
-        order.push("release");
-      },
-    };
-    const pool = { connect: () => Promise.resolve(client) } as unknown as Pool;
-    const session = createOAuthSessionStore({ pool, sealer, log });
-    const pending = session.get(DID, { signal: AbortSignal.timeout(30) });
-    await expect(pending).rejects.toMatchObject({ code: "http.deadline" });
-    expect(order).toEqual(["end", "release"]);
+  test("without_a_signal_the_query_runs", async () => {
+    const { pool, counts } = countingPool();
+    expect(await createOAuthSessionStore({ pool, sealer, log }).get(DID)).toBeUndefined();
+    expect(counts.ran).toBe(1);
   });
 });

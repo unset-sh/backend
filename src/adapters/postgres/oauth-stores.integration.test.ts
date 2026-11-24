@@ -1,29 +1,24 @@
-// P2.04 (infrastructure/postgres/oauthStores.ts, migration 0013): the OAuth client's state and session stores against
-// real Postgres, connected as `web` (TE-2). What they store is sealed, bound to its row, and read back only before it
-// expires; a row that does not open is deleted and reads as missing.
-import { relative } from "node:path";
-import {
-  createOAuthSessionStore,
-  createOAuthStateStore,
-  createPool,
-  oauthSessionExists,
-  type Pool,
-  withClient,
-} from "@unset/infrastructure-postgres";
-import { createSealer, parseKeyring } from "@unset/infrastructure-seal";
-import type { LogEvent, LogFields, Logger } from "@unset/shared-log";
-import { afterAll, describe, expect, inject, test } from "vitest";
+// P2.04 (oauthStores.ts, migration 0006): the OAuth client's state and session stores against real Postgres, connected
+// as `backend`. What they store is sealed, bound to its row, and read back only before it expires; a row that does not
+// open is deleted and reads as missing. Adapted from Undefined6799/unset@60228f5
+// infrastructure/postgres/oauth-stores.integration.test.ts (role `web` there).
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { LogEvent, LogFields, Logger } from "../../shared/log/index.ts";
+import { createSealer, parseKeyring } from "../seal/index.ts";
+import { createOAuthSessionStore, createOAuthStateStore, oauthSessionExists } from "./oauthStores.ts";
+import type { Pool } from "./pool.ts";
+import { startTestPostgres, type TestPostgres } from "./test-database.ts";
 
-const provided = inject("postgres");
-const database = provided.databases[relative(`${import.meta.dirname}/../../..`, import.meta.filename)] ?? "";
-const connection = { host: provided.host, port: provided.port, ...provided.roles.web, database, ssl: false };
-const web: Pool = createPool({
-  connection,
-  service: "oauth-stores-test",
-  max: 4,
-  connectTimeoutMs: 5000,
+let postgres: TestPostgres;
+let database: string;
+let backend: Pool;
+
+beforeAll(async () => {
+  postgres = await startTestPostgres();
+  database = await postgres.migratedDatabase();
+  backend = await postgres.connectAs(database, "backend");
 });
-afterAll(() => web.end());
+afterAll(() => postgres.stop());
 
 const keyring = parseKeyring(JSON.stringify({ active: "k1", keys: { k1: Buffer.alloc(32, 7).toString("base64") } }));
 if (keyring === undefined) throw new Error("test keyring did not parse");
@@ -33,22 +28,21 @@ const DID_A = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
 const DID_B = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
 type Saved = { authMethod: { method: "private_key_jwt"; kid: string } | { method: "none" }; tokenSet: { a: string } };
 
-function setup() {
+function setup(pool: Pool = backend) {
   const logged: { event: LogEvent; fields: LogFields }[] = [];
   const record = (event: LogEvent, fields: LogFields = {}) => {
     logged.push({ event, fields });
   };
   const log: Logger = { info: record, warn: record, error: record, logError: () => undefined };
   return {
-    state: createOAuthStateStore<{ verifier: string }>({ pool: web, sealer, log }),
-    session: createOAuthSessionStore<Saved>({ pool: web, sealer, log }),
+    state: createOAuthStateStore<{ verifier: string }>({ pool, sealer, log }),
+    session: createOAuthSessionStore<Saved>({ pool, sealer, log }),
     logged,
-    log,
   };
 }
 
-const sql = <T extends Record<string, unknown>>(text: string, values: unknown[] = []) =>
-  withClient(web, null, async (client) => (await client.query<T>(text, values)).rows);
+/** Runs `text` as the superuser, as an operator or an attacker with a dump would; rows as `a|b` lines. */
+const admin = (text: string) => postgres.sql(database, text);
 
 describe("oauth stores", () => {
   test("stores_sealed_at_rest", async () => {
@@ -56,10 +50,12 @@ describe("oauth stores", () => {
     const verifier = "pkce-verifier-that-must-never-be-stored-in-clear";
     await state.set("state-1", { verifier });
     await session.set(DID_A, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: verifier } });
-    const [stateRow] = await sql<{ sealed: string }>("SELECT sealed FROM app.oauth_state WHERE key = 'state-1'");
-    const [sessionRow] = await sql<{ sealed: string }>("SELECT sealed FROM app.oauth_session WHERE did = $1", [DID_A]);
-    expect(stateRow?.sealed).not.toContain(verifier);
-    expect(sessionRow?.sealed).not.toContain(verifier);
+    const stateRow = await admin("SELECT sealed FROM app.oauth_state WHERE key = 'state-1'");
+    const sessionRow = await admin(`SELECT sealed FROM app.oauth_session WHERE did = '${DID_A}'`);
+    expect(stateRow).toStartWith("s1.k1.");
+    expect(sessionRow).toStartWith("s1.k1.");
+    expect(stateRow).not.toContain(verifier);
+    expect(sessionRow).not.toContain(verifier);
     expect(await state.get("state-1")).toEqual({ verifier });
     expect((await session.get(DID_A))?.tokenSet).toEqual({ a: verifier });
   });
@@ -69,14 +65,13 @@ describe("oauth stores", () => {
     await session.set(DID_A, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "a" } });
     await session.set(DID_B, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "b" } });
     // A dump edited to give B's token set to A, and A's to B: each value is bound to its own DID, so neither opens.
-    await sql(
+    await admin(
       "UPDATE app.oauth_session s SET sealed = o.sealed FROM app.oauth_session o " +
-        "WHERE (s.did = $1 AND o.did = $2) OR (s.did = $2 AND o.did = $1)",
-      [DID_A, DID_B],
+        `WHERE (s.did = '${DID_A}' AND o.did = '${DID_B}') OR (s.did = '${DID_B}' AND o.did = '${DID_A}')`,
     );
     expect(await session.get(DID_A)).toBeUndefined();
     expect(await session.get(DID_B)).toBeUndefined();
-    expect(await sql("SELECT did FROM app.oauth_session WHERE did = ANY($1)", [[DID_A, DID_B]])).toEqual([]);
+    expect(await admin(`SELECT did FROM app.oauth_session WHERE did IN ('${DID_A}', '${DID_B}')`)).toBe("");
     expect(logged.filter((line) => line.event === "oauth.unseal_failed")).toEqual([
       { event: "oauth.unseal_failed", fields: { kind: "session" } },
       { event: "oauth.unseal_failed", fields: { kind: "session" } },
@@ -86,64 +81,48 @@ describe("oauth stores", () => {
   test("stores_expiry", async () => {
     const { state } = setup();
     await state.set("state-old", { verifier: "v" });
-    await sql("UPDATE app.oauth_state SET expires_at = now() - interval '1 second' WHERE key = 'state-old'");
+    await admin("UPDATE app.oauth_state SET expires_at = now() - interval '1 second' WHERE key = 'state-old'");
     expect(await state.get("state-old")).toBeUndefined();
     await state.set("state-new", { verifier: "v" });
-    const [row] = await sql<{ left: number }>(
-      "SELECT extract(epoch FROM expires_at - now())::int AS left FROM app.oauth_state WHERE key = 'state-new'",
+    const left = Number(
+      await admin("SELECT extract(epoch FROM expires_at - now())::int FROM app.oauth_state WHERE key = 'state-new'"),
     );
-    expect(row?.left).toBeGreaterThan(590);
-    expect(row?.left).toBeLessThanOrEqual(600);
+    expect(left).toBeGreaterThan(590);
+    expect(left).toBeLessThanOrEqual(600);
     // An abandoned login never reaches del; the hourly sweep removes it and keeps the live one.
     expect(await state.sweep()).toBe(1);
-    expect(await sql("SELECT key FROM app.oauth_state WHERE key IN ('state-old', 'state-new')")).toEqual([
-      { key: "state-new" },
-    ]);
+    expect(await admin("SELECT key FROM app.oauth_state WHERE key IN ('state-old', 'state-new')")).toBe("state-new");
   });
 
   test("stores_unseal_cleanup_spares_a_newer_value", async () => {
-    // Review on #921: between this replica's read of a value that does not open and its cleanup, another replica
+    // Between this replica's read of a value that does not open and its cleanup, another replica
     // stores a fresh token set for the same DID. The cleanup deletes only the ciphertext it read.
     const { session } = setup();
     await session.set(DID_B, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "b" } });
     await session.set(DID_A, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "a" } });
-    await sql(
-      "UPDATE app.oauth_session SET sealed = (SELECT sealed FROM app.oauth_session WHERE did = $2) WHERE did = $1",
-      [DID_A, DID_B],
+    await admin(
+      `UPDATE app.oauth_session SET sealed = (SELECT sealed FROM app.oauth_session WHERE did = '${DID_B}') ` +
+        `WHERE did = '${DID_A}'`,
     );
     const fresh: Saved = { authMethod: { method: "private_key_jwt", kid: "B" }, tokenSet: { a: "fresh" } };
-    const racing = createPool({ connection, service: "oauth-stores-race", max: 1, connectTimeoutMs: 5000 });
+    // The same pool, except that just before its first DELETE runs, another replica stores a fresh token set.
     let raced = false;
-    const connect = racing.connect.bind(racing);
-    racing.connect = (async () => {
-      const client = await connect();
-      const query = client.query.bind(client) as (text: string, values?: unknown[]) => Promise<unknown>;
-      (client as { query: unknown }).query = async (text: string, values?: unknown[]) => {
-        if (!raced && text.startsWith("DELETE")) {
-          raced = true;
-          await session.set(DID_A, fresh);
-        }
-        return query(text, values);
-      };
-      return client;
-    }) as typeof racing.connect;
-    try {
-      const slow = createOAuthSessionStore<Saved>({ pool: racing, sealer, log: setup().log });
-      expect(await slow.get(DID_A)).toBeUndefined();
-      expect(raced).toBe(true);
-      expect((await session.get(DID_A))?.tokenSet).toEqual({ a: "fresh" });
-    } finally {
-      await racing.end();
-    }
+    const racing = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (raced || !strings[0]?.trimStart().startsWith("DELETE")) return backend(strings, ...values);
+      raced = true;
+      return session.set(DID_A, fresh).then(() => backend(strings, ...values));
+    }) as unknown as Pool;
+    const slow = setup(racing).session;
+    expect(await slow.get(DID_A)).toBeUndefined();
+    expect(raced).toBe(true);
+    expect((await session.get(DID_A))?.tokenSet).toEqual({ a: "fresh" });
   });
 
   test("stores_client_kid_recorded", async () => {
     const { session } = setup();
     await session.set(DID_A, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "1" } });
     await session.set(DID_A, { authMethod: { method: "private_key_jwt", kid: "B" }, tokenSet: { a: "2" } });
-    expect(await sql("SELECT client_kid FROM app.oauth_session WHERE did = $1", [DID_A])).toEqual([
-      { client_kid: "B" },
-    ]);
+    expect(await admin(`SELECT client_kid FROM app.oauth_session WHERE did = '${DID_A}'`)).toBe("B");
     expect((await session.get(DID_A))?.tokenSet).toEqual({ a: "2" });
   });
 
@@ -160,11 +139,11 @@ describe("oauth stores", () => {
   test("session_exists_follows_the_row", async () => {
     const { session } = setup();
     const did = "did:plc:cccccccccccccccccccccccc";
-    expect(await oauthSessionExists(web, did)).toBe(false);
+    expect(await oauthSessionExists(backend, did)).toBe(false);
     await session.set(did, { authMethod: { method: "private_key_jwt", kid: "A" }, tokenSet: { a: "x" } });
-    expect(await oauthSessionExists(web, did)).toBe(true);
-    expect(await oauthSessionExists(web, DID_A.replace(/a$/, "z"))).toBe(false);
+    expect(await oauthSessionExists(backend, did)).toBe(true);
+    expect(await oauthSessionExists(backend, DID_A.replace(/a$/, "z"))).toBe(false);
     await session.del(did);
-    expect(await oauthSessionExists(web, did)).toBe(false);
+    expect(await oauthSessionExists(backend, did)).toBe(false);
   });
 });

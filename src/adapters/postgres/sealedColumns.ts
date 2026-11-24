@@ -1,10 +1,10 @@
 // The sealed column registry (P1.14d; plan §5.3). A seal context is never a free string: it comes only from a column
 // listed in sealed-columns.json and that row's key, so two call sites can never share or drift on one. Every column of
-// type `types.sealed` (migration 0007) has a row; a row with a `form` registers a text or bytea column that names a
+// type `types.sealed` (migration 0005) has a row; a row with a `form` registers a text or bytea column that names a
 // stream-sealed object or holds a public-key record (step book P1.14 "Registering contexts"). The catalog query is
 // what the registry test compares against.
-import { type SealContext, sealContext } from "@unset/infrastructure-seal";
-import { type Pool, withClient } from "./pool.ts";
+import { type SealContext, sealContext } from "../seal/index.ts";
+import type { Pool } from "./pool.ts";
 import registry from "./sealed-columns.json" with { type: "json" };
 
 export type SealedForm = "sealStream" | "sealToStream" | "sealTo";
@@ -55,20 +55,19 @@ export const sealedContext = (column: SealedColumnId, rowKey: string): SealConte
 export type CatalogColumn = { readonly key: string; readonly type: "sealed" | "text" | "bytea" };
 
 /** Columns of tables in every schema that are `types.sealed`, or plain text or bytea a `form` row may name. */
-const QUERY = `
-  SELECT n.nspname || '.' || c.relname || '.' || a.attname AS key,
-         CASE WHEN t.typname = 'sealed' AND t.typnamespace = 'types'::regnamespace THEN 'sealed' ELSE t.typname END
-           AS type
-    FROM pg_catalog.pg_attribute a
-    JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
-   WHERE ((t.typname = 'sealed' AND t.typnamespace = 'types'::regnamespace) OR t.oid IN ('text'::regtype, 'bytea'::regtype))
-     AND c.relkind IN ('r', 'p')
-     AND a.attnum > 0 AND NOT a.attisdropped
-     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
-   ORDER BY 1`;
-
 export function sealedColumns(pool: Pool): Promise<CatalogColumn[]> {
-  return withClient(pool, null, async (client) => (await client.query<CatalogColumn>(QUERY)).rows);
+  return pool`
+    SELECT n.nspname || '.' || c.relname || '.' || a.attname AS key,
+           CASE WHEN t.typname = 'sealed' AND t.typnamespace = 'types'::regnamespace THEN 'sealed' ELSE t.typname END
+             AS type
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+     WHERE ((t.typname = 'sealed' AND t.typnamespace = 'types'::regnamespace)
+            OR t.oid IN ('text'::regtype, 'bytea'::regtype))
+       AND c.relkind IN ('r', 'p')
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+     ORDER BY 1`;
 }

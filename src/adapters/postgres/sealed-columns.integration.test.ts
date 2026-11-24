@@ -1,61 +1,29 @@
-// P1.14d (migration 0007, infrastructure/postgres/sealed-columns.json, sealedColumns.ts, rewrapAll.ts): every
-// `types.sealed` column has a registry row, every row with a `form` names a real non-sealed text or bytea column, and
-// `rewrapAll` moves every registered value to the active key (step book P1.14, tests rewrap_all_counts and
-// sealed_columns_registry). The catalog is the list, as for DID columns (P1.13 method).
-//
-// It runs on its own container through tests/support/postgres.ts, like did-columns.test.ts: each case adds tables as
-// migrator in a throwaway database, and the domain check and the rewrap run as `web`, the role that writes.
-import { randomBytes } from "node:crypto";
-import { join } from "node:path";
-import {
-  checkExit,
-  kidCounts,
-  type Pool,
-  rewrapAll,
-  SEALED_COLUMNS,
-  type SealedRegistry,
-  sealedColumns,
-  withClient,
-} from "@unset/infrastructure-postgres";
-import { createSealer, type Keyring, parseKeyring, sealContext } from "@unset/infrastructure-seal";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import {
-  migrateAsMigrator,
-  type PostgresContainer,
-  randomPassword,
-  STOP_ALL_MS,
-  startPostgres,
-  stopAllPostgresAfter,
-  testPools,
-} from "../../support/postgres.ts";
+// P1.14d (migration 0005, sealed-columns.json, sealedColumns.ts): every `types.sealed` column has a registry row, and
+// every row with a `form` names a real non-sealed text or bytea column. The catalog is the list. Adapted from
+// Undefined6799/unset@60228f5 infrastructure/postgres/sealed-columns.integration.test.ts; its rewrap_all_counts case
+// comes with the key-rotation runbook, which this slice does not carry.
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createSealer, type Keyring, parseKeyring, sealContext } from "../seal/index.ts";
+import type { Pool } from "./pool.ts";
+import { sqlstateOf } from "./pool.ts";
+import { SEALED_COLUMNS, type SealedRegistry, sealedColumns } from "./sealedColumns.ts";
+import { startTestPostgres, type TestPostgres } from "./test-database.ts";
 
-const REPOSITORY = join(import.meta.dirname, "..", "..", "..");
-const migratorPassword = randomPassword();
-const webPassword = randomPassword();
-const pools = testPools("sealed-columns-test");
-let postgres: PostgresContainer;
+let postgres: TestPostgres;
+let database: string;
+let backend: Pool;
 
 beforeAll(async () => {
-  postgres = await startPostgres({
-    initDir: join(REPOSITORY, "deployment", "postgres", "init"),
-    secrets: { pg_migrator_password: migratorPassword, pg_tap_password: randomPassword() },
-  });
-  await migrateAsMigrator(postgres, migratorPassword);
-  postgres.sql("postgres", `ALTER ROLE web PASSWORD '${webPassword}'`);
-}, 120_000);
-afterAll(() => stopAllPostgresAfter(pools.end), STOP_ALL_MS);
+  postgres = await startTestPostgres();
+  database = await postgres.migratedDatabase();
+  backend = await postgres.connectAs(database, "backend");
+});
+afterAll(() => postgres.stop());
 
-function poolFor(database: string, user = "migrator", password = migratorPassword): Pool {
-  return pools.open(postgres, database, user, password);
-}
-
-/** A database migrated from scratch, then `sql` run as migrator: the "temporary migration" of each case. */
+/** A database migrated from scratch, then `sql` run in it: the "temporary migration" of each case. */
 async function migratedWith(sql: string): Promise<string> {
-  const name = `s_${randomBytes(6).toString("hex")}`;
-  postgres.sql("postgres", `CREATE DATABASE ${name} OWNER migrator`);
-  postgres.sql(name, `REVOKE ALL ON DATABASE ${name} FROM PUBLIC; REVOKE ALL ON SCHEMA public FROM PUBLIC`);
-  await migrateAsMigrator(postgres, migratorPassword, name);
-  await withClient(poolFor(name), null, (client) => client.query(sql));
+  const name = await postgres.migratedDatabase();
+  await postgres.sql(name, sql);
   return name;
 }
 
@@ -65,20 +33,14 @@ async function registryProblems(pool: Pool, registry: SealedRegistry = SEALED_CO
   const sealed = catalog.filter((c) => c.type === "sealed").map((c) => c.key);
   const plain = new Set(catalog.filter((c) => c.type === "text" || c.type === "bytea").map((c) => c.key));
   const entries = Object.entries(registry);
-  // rewrapAll writes a value back by its row key, so the row key must be unique on its own (primary key or unique).
-  const unique = new Set(
-    (
-      await withClient(pool, null, (client) =>
-        client.query<{ key: string }>(
-          `SELECT n.nspname || '.' || c.relname || '.' || a.attname AS key
-             FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
-                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
-            WHERE i.indisunique AND i.indnkeyatts = 1 AND i.indpred IS NULL`,
-        ),
-      )
-    ).rows.map((r) => r.key),
-  );
+  // A value is opened and rewritten by its row key, so the row key must be unique on its own (primary key or unique).
+  const uniqueRows: { key: string }[] = await pool`
+    SELECT n.nspname || '.' || c.relname || '.' || a.attname AS key
+      FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
+     WHERE i.indisunique AND i.indnkeyatts = 1 AND i.indpred IS NULL`;
+  const unique = new Set(uniqueRows.map((r) => r.key));
   const tableOf = (key: string) => key.split(".").slice(0, 2).join(".");
   return [
     ...sealed.filter((key) => !(key in registry)).map((key) => `add a sealed-columns row for ${key}`),
@@ -94,35 +56,30 @@ async function registryProblems(pool: Pool, registry: SealedRegistry = SEALED_CO
   ];
 }
 
-const keyring = (active: string, kids: readonly string[]): Keyring =>
-  parseKeyring(
-    JSON.stringify({
-      active,
-      // Each kid has the same key in every keyring, as a real rotation keeps the old keys.
-      keys: Object.fromEntries(kids.map((kid) => [kid, Buffer.alloc(32, kid).toString("base64")])),
-    }),
-  ) as Keyring;
+const keyring = parseKeyring(
+  JSON.stringify({ active: "k1", keys: { k1: Buffer.alloc(32, 1).toString("base64") } }),
+) as Keyring;
 
-/** The SQLSTATE a statement fails with as `web`, or "ok". */
-async function asWeb(database: string, sql: string): Promise<string> {
+/** The SQLSTATE casting `value` to types.sealed fails with as `backend`, or "ok". */
+async function asBackend(value: string): Promise<string> {
   try {
-    await withClient(poolFor(database, "web", webPassword), null, (client) => client.query(sql));
+    await backend`SELECT ${value}::types.sealed`;
     return "ok";
   } catch (error) {
-    return String((error as { code?: unknown }).code);
+    return sqlstateOf(error) ?? String(error);
   }
 }
 
 describe("sealed columns", () => {
   test("registry_complete", async () => {
-    expect(await registryProblems(poolFor("unset"))).toEqual([]);
+    expect(await registryProblems(backend)).toEqual([]);
   });
 
   test("sealed_columns_registry", async () => {
     const database = await migratedWith(
       "CREATE TABLE app.t (id text PRIMARY KEY, secret types.sealed, media_key text, blob bytea, n int, owner text)",
     );
-    const pool = poolFor(database);
+    const pool = await postgres.connectAs(database, "backend");
     // The real registry's rows ride along in each one given here, so only app.t's problems show.
     expect(await registryProblems(pool)).toEqual(["add a sealed-columns row for app.t.secret"]);
     expect(await registryProblems(pool, { ...SEALED_COLUMNS, "app.t.secret": { rowKey: "id" } })).toEqual([]);
@@ -151,45 +108,10 @@ describe("sealed columns", () => {
   });
 
   test("sealed_domain_check", async () => {
-    const value = createSealer(keyring("k1", ["k1"])).seal(Buffer.from("x"), sealContext("app.t.c", "1"));
-    expect(await asWeb("unset", `SELECT '${value}'::types.sealed`)).toBe("ok");
+    const value = createSealer(keyring).seal(Buffer.from("x"), sealContext("app.t.c", "1"));
+    expect(await asBackend(value)).toBe("ok");
     for (const bad of ["plain", "s1..x", "s1.K1.x", "s1.abcdefghijklmnopq.x", "a1.k1.x", "s1c.k1.x"]) {
-      expect(await asWeb("unset", `SELECT '${bad}'::types.sealed`), bad).toBe("23514");
-    }
-  });
-
-  test("rewrap_all_counts", async () => {
-    const database = await migratedWith(
-      "CREATE TABLE app.r (id text PRIMARY KEY, secret types.sealed, other types.sealed);" +
-        " GRANT SELECT (id, secret, other), UPDATE (secret, other) ON app.r TO web",
-    );
-    const registry: SealedRegistry = { "app.r.secret": { rowKey: "id" }, "app.r.other": { rowKey: "id" } };
-    const before = createSealer(keyring("k1", ["k1"]));
-    const values = ["1", "2", "3"].map((id) => [id, before.seal(Buffer.from(id), sealContext("app.r.secret", id))]);
-    await withClient(poolFor(database), null, (client) =>
-      client.query(`INSERT INTO app.r (id, secret) SELECT * FROM unnest($1::text[], $2::text[])`, [
-        values.map(([id]) => id),
-        values.map(([, value]) => value),
-      ]),
-    );
-    const web = poolFor(database, "web", webPassword);
-    expect(await kidCounts(web, registry)).toEqual({ k1: 3 });
-    expect(checkExit(await kidCounts(web, registry), "k1")).toBe(1);
-
-    expect(await rewrapAll(web, keyring("k2", ["k1", "k2"]), { registry, batchSize: 2 })).toEqual({ k1: 0, k2: 3 });
-    expect(await kidCounts(web, registry)).toEqual({ k2: 3 });
-    expect(checkExit(await kidCounts(web, registry), "k1")).toBe(0);
-    // A second run finds nothing left to move.
-    expect(await rewrapAll(web, keyring("k2", ["k1", "k2"]), { registry })).toEqual({ k2: 3 });
-    const rows = await withClient(
-      web,
-      null,
-      async (client) => (await client.query("SELECT id, secret FROM app.r")).rows,
-    );
-    const only = createSealer(keyring("k2", ["k2"]));
-    for (const row of rows as { id: string; secret: string }[]) {
-      expect(row.secret.startsWith("s1.k2.")).toBe(true);
-      expect(Buffer.from(only.unseal(row.secret, sealContext("app.r.secret", row.id))).toString()).toBe(row.id);
+      expect(await asBackend(bad), bad).toBe("23514");
     }
   });
 });

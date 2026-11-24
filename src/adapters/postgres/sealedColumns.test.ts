@@ -1,7 +1,7 @@
 // P1.14d: a seal context comes only from a registered column and a row key, so two columns or two rows never share
 // one, and a value sealed for one cannot be opened as another (step book P1.14d; P1.14 "Contexts are not free strings").
-import { createSealer, type Keyring, parseKeyring, SealError } from "@unset/infrastructure-seal";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
+import { createSealer, type Keyring, parseKeyring, SealError } from "../seal/index.ts";
 import { contextIn, parseRegistry, SEALED_COLUMNS, type SealedRegistry } from "./sealedColumns.ts";
 
 const REGISTRY: SealedRegistry = {
