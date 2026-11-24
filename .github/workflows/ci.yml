@@ -14,8 +14,9 @@ concurrency:
 
 jobs:
   check:
-    # tooling main after unset-sh/tooling#23 (Bun check with a Postgres service).
-    uses: unset-sh/tooling/.github/workflows/ci-check.yml@5cdc97a1440b04e48cba766909cd26099deef6bb
+    # tooling main after unset-sh/tooling#33: the install step gives the package token as GITHUB_PACKAGES_TOKEN,
+    # which bunfig.toml names for @unset-sh, never as NPM_CONFIG_TOKEN.
+    uses: unset-sh/tooling/.github/workflows/ci-check.yml@cbc0732281b48db638da554fe163d156e64f9066
     permissions:
       contents: read
       packages: read # the shared workflow's install step asks for it; no @unset-sh package is installed yet
