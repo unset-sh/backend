@@ -7,6 +7,7 @@ import {
   type Config,
   defineEntrypointConfig,
   int,
+  optionalSecretFile,
   origin,
   secretFile,
   str,
@@ -20,6 +21,23 @@ import {
  * client a public origin needs comes with its own key, which only Alex places.
  */
 const LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1:[0-9]{1,5}$/;
+
+/**
+ * The internal API's TLS (Alex, 2026-11-24: mutual TLS between web and backend, staging included): backend's server
+ * certificate and key, and the CA that signs web's client certificate, the only one accepted. Each is a PEM file named
+ * by `<KEY>_FILE`, made with unset-sh/deployment's scripts/internal-tls.sh. All three or none; none only where
+ * UNSET_ENV is dev or test, which serve plain HTTP.
+ */
+const TLS_KEYS = ["INTERNAL_TLS_CERT", "INTERNAL_TLS_KEY", "INTERNAL_TLS_CLIENT_CA"] as const;
+const tlsHolds = (config: Readonly<Record<string, unknown>>): boolean => {
+  const set = TLS_KEYS.filter((key) => config[key] !== undefined).length;
+  return set === TLS_KEYS.length || (set === 0 && (config.UNSET_ENV === "dev" || config.UNSET_ENV === "test"));
+};
+const tlsFields = {
+  INTERNAL_TLS_CERT: withRule(optionalSecretFile({ minBytes: 64 }), tlsHolds),
+  INTERNAL_TLS_KEY: withRule(optionalSecretFile({ minBytes: 64 }), tlsHolds),
+  INTERNAL_TLS_CLIENT_CA: withRule(optionalSecretFile({ minBytes: 64 }), tlsHolds),
+};
 
 export const backendConfig = defineEntrypointConfig({
   ...postgresFields,
@@ -44,6 +62,9 @@ export const backendConfig = defineEntrypointConfig({
   HANDLE_VERIFY_TTL_S: int({ min: 1, max: 3_600, default: 600 }),
   HANDLE_INVALID_TTL_S: int({ min: 1, max: 3_600, default: 60 }),
   HANDLE_CACHE_MAX: int({ min: 1, max: 100_000, default: 10_000 }),
+  ...tlsFields,
+  /** The image's health probe: plain HTTP on 127.0.0.1 inside the container (serve.ts `serveProbe`). */
+  PROBE_PORT: int({ min: 1024, max: 65535, default: 8081 }),
 });
 
 export type BackendConfig = Config<typeof backendConfig.fields>;

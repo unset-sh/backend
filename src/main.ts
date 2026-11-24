@@ -131,4 +131,13 @@ const ready = async (): Promise<boolean> => {
   return own && auth_;
 };
 
-serve({ ready, sessions: createSessions(auth), profiles, webOrigin: config.WEB_ORIGIN }, log, config.LISTEN_PORT);
+// config.ts holds all three or none, and none only in dev and test.
+const { INTERNAL_TLS_CERT: cert, INTERNAL_TLS_KEY: key, INTERNAL_TLS_CLIENT_CA: clientCa } = config;
+const tls =
+  cert && key && clientCa ? { cert: cert.reveal(), key: key.reveal(), clientCa: clientCa.reveal() } : undefined;
+serve(
+  { ready, sessions: createSessions(auth), profiles, webOrigin: config.WEB_ORIGIN },
+  log,
+  { api: config.LISTEN_PORT, probe: config.PROBE_PORT },
+  tls,
+);
