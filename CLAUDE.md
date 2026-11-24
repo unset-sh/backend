@@ -39,6 +39,7 @@ map with `npm run map`, and update this section in the same piece of work.
 bun install --frozen-lockfile --ignore-scripts
 bun run check     # type check, Biome, dependency-cruiser boundaries, bun test, contract drift
 bun run openapi   # rewrite api/internal/openapi.yaml after changing a route's schema
+bun run app-types # rewrite api/internal/app.d.ts, web's Eden type (org-0017), after the same change
 bun run migrate   # apply the migrations as `migrator` (PG_* settings, PG_PASSWORD_FILE)
 docker build .    # the image: server by default, `src/adapters/postgres/migrate-cli.ts` for migrations
 ```
@@ -47,5 +48,6 @@ The Postgres tests run against a real server and fail, never skip, without one: 
 superuser) and, if needed, `PGPORT` and `PGPASSWORD` for a disposable Postgres. CI gets one from tooling's check.
 
 Bun is the runtime (`.bun-version`, `bunfig.toml`, `bun.lock`; 7-day release age, no lifecycle scripts). The
-internal API's route schemas are its contract; commit the regenerated `api/internal/openapi.yaml` with the
-route. CI runs tooling's Bun check and `pr-policy`; the agent-kit copy is not installed yet.
+internal API's route schemas are its contract; commit the regenerated `api/internal/openapi.yaml` and
+`api/internal/app.d.ts` with the route. CI runs tooling's Bun check and `pr-policy`; the agent-kit copy is not
+installed yet.

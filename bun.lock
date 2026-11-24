@@ -18,6 +18,7 @@
       },
       "devDependencies": {
         "@biomejs/biome": "2.5.15",
+        "@elysia/eden": "1.4.10",
         "@swc/core": "1.16.18",
         "@types/bun": "1.4.4",
         "@types/pg": "8.23.1",
@@ -108,6 +109,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.15", "", { "os": "win32", "cpu": "x64" }, "sha512-yAzh4UqEImV6Hcy0zjUqNfJAsUhoD64FBQCdTG8Md/Z2wQeVP/ZmJ3XRYAs1g8J9fjTFyl2fCtc5FB5til47+g=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.3", "", {}, "sha512-49CycTz1aAZmvFcwkeFyhud1HUmRIB5Tabf7ALV+VA4Iu85MTfz2cUwzPagMFAdVBvrWdkCxG67I30tUwwpKsw=="],
+
+    "@elysia/eden": ["@elysia/eden@1.4.10", "", { "peerDependencies": { "elysia": ">=1.4.19" } }, "sha512-vcZXQcW6wZj6rhTxaiTkuCbVuS/yAJQ9jqCM6b83a5hu99F5Aj3HOyWXL17iod2Rz+pJpYsQGX0XaeoCsMpw2g=="],
 
     "@elysia/openapi": ["@elysia/openapi@1.4.17", "", { "peerDependencies": { "@sinclair/typebox": ">= 0.34.0 < 1", "elysia": ">= 1.4.0", "typescript": ">= 5.0.0" } }, "sha512-rmyqxfoQyM6QMsxelt6RMuM8b0I6y33KgGcrm5LKw2xIOVHRFg9EAbxFejZBfyZmVYkY3EazgaPNlEz4HJ3Thg=="],
 

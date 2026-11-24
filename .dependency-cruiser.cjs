@@ -4,9 +4,10 @@
 
 /** Each vendor SDK and the one folder (or file) allowed to import it. A new SDK is a new row, in the same PR. */
 const SDK_HOMES = [
-  // The HTTP framework: the server composition and the script that writes the contract from it.
-  { sdk: "elysia", home: "^(src/server/|scripts/openapi\\.ts$)" },
-  { sdk: "@elysia/[^/]+", home: "^(src/server/|scripts/openapi\\.ts$)" },
+  // The HTTP framework: the server composition, the script that writes the contract from it, and the published type
+  // with the test that calls it through Eden (org-0017).
+  { sdk: "elysia", home: "^(src/server/|scripts/openapi\\.ts$|api/internal/app\\.d\\.ts$)" },
+  { sdk: "@elysia/[^/]+", home: "^(src/server/|scripts/openapi\\.ts$|scripts/app-types\\.test\\.ts$)" },
   { sdk: "yaml", home: "^scripts/openapi(\\.test)?\\.ts$" },
   // The atproto OAuth client and its key, scope and metadata packages: the atproto adapter.
   { sdk: "@atproto(-labs)?/[^/]+", home: "^src/adapters/atproto/" },
