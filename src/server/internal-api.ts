@@ -2,17 +2,36 @@
 // Its route schemas are the contract; scripts/openapi.ts writes them to api/internal/openapi.yaml. A public API, when
 // there is one, is a separate group with its own contract, never added here.
 import { Elysia, ElysiaCustomStatusResponse, t } from "elysia";
+import type { Did } from "../domains/identity/index.ts";
 import { PROBLEM_CONTENT_TYPE, Problem, problem } from "./problem.ts";
-
-/** A DID as the identity domain accepts it (src/domains/identity/syntax.ts), as the routes see one. */
-type Did = string & { readonly __brand: "Did" };
 
 /** What the sign-in operations need: the Unset session over Better Auth (src/adapters/auth/index.ts `Sessions`). */
 export type SessionsPort = {
   start(handle: string): Promise<{ ok: true; url: string } | { ok: false; reason: StartFailure }>;
   complete(query: string): Promise<{ ok: true; sessionToken: string } | { ok: false; reason: CompleteFailure }>;
-  current(headers: Headers): Promise<{ readonly did: Did | string } | null>;
+  current(headers: Headers): Promise<{ readonly did: Did } | null>;
   signOut(headers: Headers): Promise<"ok" | "no_session" | "failed">;
+};
+
+type ProfileView = { readonly did: string; readonly handle?: string; readonly displayName?: string };
+const PROFILE_READ_FAILURES = ["session_ended", "scope_missing", "pds_unreachable", "failed"] as const;
+const PROFILE_WRITE_FAILURES = [
+  ...PROFILE_READ_FAILURES,
+  "name_invalid",
+  "name_too_long",
+  "conflict",
+  "record_invalid",
+] as const;
+type ProfileReadFailure = (typeof PROFILE_READ_FAILURES)[number];
+type ProfileWriteFailure = (typeof PROFILE_WRITE_FAILURES)[number];
+
+/** The profile operations (src/domains/profile/operations.ts `Profiles`), for the caller's own DID only. */
+export type ProfilesPort = {
+  get(did: Did): Promise<{ ok: true; profile: ProfileView } | { ok: false; reason: ProfileReadFailure }>;
+  setDisplayName(
+    did: Did,
+    displayName: string,
+  ): Promise<{ ok: true; profile: ProfileView } | { ok: false; reason: ProfileWriteFailure }>;
 };
 
 /** What the internal API needs from the rest of the process. Each operation adds the port it uses. */
@@ -20,6 +39,7 @@ export type InternalApiDeps = {
   /** True when every dependency a request needs can be reached now. Never throws. */
   readonly ready: () => Promise<boolean>;
   readonly sessions: SessionsPort;
+  readonly profiles: ProfilesPort;
   /** Web's origin: a request that carries a cookie must come from it (org-0015). */
   readonly webOrigin: string;
 };
@@ -71,11 +91,19 @@ const WITH_BODY = {
   422: Problem(422, ["invalid_request"]),
 } as const;
 const UNTRUSTED_ORIGIN = Problem(403, ["untrusted_origin"]);
+/** A profile as web sees it: the DID, the handle only when it verifies both ways, the display name when set. */
+const ProfileBody = closed({
+  did: t.String({ minLength: 1 }),
+  handle: t.Optional(t.String({ minLength: 1 })),
+  displayName: t.Optional(t.String({ minLength: 1 })),
+});
+/** The lexicon's byte limit bounds the code units too; the grapheme and byte limits are the domain's to check. */
+const DisplayNameBody = closed({ displayName: t.String({ maxLength: 640 }) });
 const START_CODES = [...START_FAILURES, "invalid_request"] as const;
 const COMPLETE_CODES = [...COMPLETE_FAILURES, "invalid_request"] as const;
 
 export function internalApi(deps: InternalApiDeps) {
-  const { sessions } = deps;
+  const { sessions, profiles } = deps;
   return (
     new Elysia({ name: "internal-api" })
       // Every refusal is a problem document (./problem.ts), including the ones Elysia makes: a body that does not
@@ -237,6 +265,93 @@ export function internalApi(deps: InternalApiDeps) {
               "Wraps Better Auth's `auth.api.getSession` (no cookie cache) as a cheap signed-in check that answers " +
               "the DID alone, so web never sees Better Auth's session or user objects.",
             tags: ["auth"],
+          },
+        },
+      )
+      .get(
+        "/me/profile",
+        async ({ request, status }) => {
+          const session = await sessions.current(request.headers);
+          if (session === null) return status(401, problem(401, "no_session"));
+          const result = await profiles.get(session.did);
+          if (result.ok) return result.profile;
+          switch (result.reason) {
+            case "session_ended":
+              return status(401, problem(401, result.reason));
+            case "scope_missing":
+              return status(403, problem(403, result.reason));
+            case "failed":
+              return status(502, problem(502, result.reason));
+            case "pds_unreachable":
+              return status(503, problem(503, result.reason));
+          }
+        },
+        {
+          response: {
+            200: ProfileBody,
+            401: Problem(401, ["no_session", "session_ended"]),
+            403: Problem(403, ["untrusted_origin", "scope_missing"]),
+            502: Problem(502, ["failed"]),
+            503: Problem(503, ["pds_unreachable"]),
+            ...ALWAYS,
+          },
+          detail: {
+            summary: "The caller's profile: DID, verified handle and display name",
+            description:
+              "The session comes from Better Auth's `auth.api.getSession`; the profile is the caller's own " +
+              "`sh.unset.profile/self` record, read from their PDS over their OAuth session. The handle is present " +
+              "only when it resolves back to the DID. `session_ended`: the AT Protocol grant is gone, and every " +
+              "session on it with it.",
+            tags: ["profile"],
+          },
+        },
+      )
+      .patch(
+        "/me/profile",
+        async ({ request, body, status }) => {
+          const session = await sessions.current(request.headers);
+          if (session === null) return status(401, problem(401, "no_session"));
+          const result = await profiles.setDisplayName(session.did, body.displayName);
+          if (result.ok) return result.profile;
+          const { reason } = result;
+          switch (reason) {
+            case "name_invalid":
+            case "name_too_long":
+              return status(400, problem(400, reason));
+            case "session_ended":
+              return status(401, problem(401, reason));
+            case "scope_missing":
+              return status(403, problem(403, reason));
+            case "conflict":
+              return status(409, problem(409, reason));
+            case "record_invalid":
+            case "failed":
+              return status(502, problem(502, reason));
+            case "pds_unreachable":
+              return status(503, problem(503, reason));
+          }
+        },
+        {
+          parse: "json",
+          body: DisplayNameBody,
+          response: {
+            200: ProfileBody,
+            400: Problem(400, ["name_invalid", "name_too_long", "invalid_request"]),
+            401: Problem(401, ["no_session", "session_ended"]),
+            403: Problem(403, ["untrusted_origin", "scope_missing"]),
+            409: Problem(409, ["conflict"]),
+            502: Problem(502, ["record_invalid", "failed"]),
+            503: Problem(503, ["pds_unreachable"]),
+            ...WITH_BODY,
+          },
+          detail: {
+            summary: "Set the caller's display name; an empty one removes it",
+            description:
+              "Reads the caller's `sh.unset.profile/self`, changes only `displayName` and writes it back with a " +
+              "compare-and-swap on the CID it read: a change made in between answers `conflict` and writes nothing. " +
+              "Every other field is kept. `record_invalid`: the stored record breaks the lexicon, so it is not " +
+              "written back under the caller's name.",
+            tags: ["profile"],
           },
         },
       )

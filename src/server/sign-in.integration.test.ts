@@ -13,7 +13,7 @@ import { type Did, parseDid } from "../domains/identity/index.ts";
 import { Secret } from "../shared/config/index.ts";
 import { createLogger } from "../shared/log/index.ts";
 import { createServer } from "./serve.ts";
-import { WEB_ORIGIN } from "./test-deps.ts";
+import { testDeps, WEB_ORIGIN } from "./test-deps.ts";
 
 const DID_A = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;
 const DID_B = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb" as Did;
@@ -79,7 +79,7 @@ beforeAll(async () => {
     grant: standInGrant(store),
     log,
   });
-  app = createServer({ ready: async () => true, sessions: createSessions(auth), webOrigin: WEB_ORIGIN }, log);
+  app = createServer({ ...testDeps(), sessions: createSessions(auth) }, log);
 });
 afterAll(async () => {
   await closeAuth();

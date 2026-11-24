@@ -4,15 +4,18 @@ import { createIdentityNetwork } from "./adapters/atproto/identity-network.ts";
 import { createGrant } from "./adapters/atproto/oauth/grant.ts";
 import type { SavedSession, SavedState } from "./adapters/atproto/oauth/oauth-client.ts";
 import { createOAuthClient } from "./adapters/atproto/oauth/oauth-client.ts";
+import { createPdsCall } from "./adapters/atproto/pds/pds-call.ts";
+import { createProfileStore } from "./adapters/atproto/pds/profile-store.ts";
 import { createAuth, createAuthDatabase, createSessions, telemetryVariablesSet } from "./adapters/auth/index.ts";
 import { createNetGuard, libraryFetch } from "./adapters/egress/index.ts";
 import { connectionOf } from "./adapters/postgres/config.ts";
 import { createRequestLock } from "./adapters/postgres/lock.ts";
-import { createOAuthSessionStore, createOAuthStateStore } from "./adapters/postgres/oauthStores.ts";
+import { createOAuthSessionStore, createOAuthStateStore, oauthSessionExists } from "./adapters/postgres/oauthStores.ts";
 import { createPool } from "./adapters/postgres/pool.ts";
 import { createSealer } from "./adapters/seal/index.ts";
 import { backendConfig } from "./config.ts";
-import { createDidResolver } from "./domains/identity/index.ts";
+import { createDidResolver, createHandleVerifier } from "./domains/identity/index.ts";
+import { createProfiles } from "./domains/profile/operations.ts";
 import { serve } from "./server/serve.ts";
 import { bootOrExit, ConfigError, exitOnConfigError } from "./shared/config/index.ts";
 import { createLogger } from "./shared/log/index.ts";
@@ -80,6 +83,31 @@ const auth = createAuth({
   log,
 });
 
+// Every call to a member's PDS restores their OAuth session here (pds-call.ts). A grant found dead is deleted, and
+// the sessions on it with it (migration 0007).
+const { pdsCall } = createPdsCall({
+  client,
+  endSessions: (did) => sessionStore.del(did),
+  tokenSetRemains: (did) => oauthSessionExists(pool, did),
+  log,
+});
+const handles = createHandleVerifier({
+  network,
+  resolveDid,
+  verifyTtlS: config.HANDLE_VERIFY_TTL_S,
+  invalidTtlS: config.HANDLE_INVALID_TTL_S,
+  cacheMax: config.HANDLE_CACHE_MAX,
+  onUnexpected: (error) => log.logError(error),
+});
+const profiles = createProfiles({
+  store: createProfileStore(pdsCall),
+  handleOf: async (did) => {
+    const verdict = await handles.verifyHandle(did);
+    return verdict.status === "verified" ? verdict.handle : undefined;
+  },
+  now: () => new Date().toISOString(),
+});
+
 /** Ready when both pools answer; a database that is down makes /health 503, never an exception. */
 const ready = async (): Promise<boolean> => {
   const backendUp = pool`SELECT 1`.then(
@@ -90,4 +118,4 @@ const ready = async (): Promise<boolean> => {
   return own && auth_;
 };
 
-serve({ ready, sessions: createSessions(auth), webOrigin: config.WEB_ORIGIN }, log, config.LISTEN_PORT);
+serve({ ready, sessions: createSessions(auth), profiles, webOrigin: config.WEB_ORIGIN }, log, config.LISTEN_PORT);

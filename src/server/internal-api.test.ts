@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { type Did, parseDid } from "../domains/identity/index.ts";
 import { createLogger } from "../shared/log/index.ts";
 import { internalApi } from "./internal-api.ts";
 import { createServer } from "./serve.ts";
@@ -109,8 +110,100 @@ describe("every refusal is an RFC 9457 problem document", () => {
   });
 
   test("a success is plain JSON", async () => {
-    const app = internalApi(testDeps({ sessions: { current: async () => ({ did: "did:plc:abc" }) } }));
+    const app = internalApi(
+      testDeps({ sessions: { current: async () => ({ did: parseDid("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa") as Did }) } }),
+    );
     const response = await app.handle(new Request("http://backend/me/session"));
     expect(response.headers.get("content-type")).toStartWith("application/json");
+  });
+});
+
+describe("the caller's profile", () => {
+  const ME = parseDid("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa") as Did;
+  const OTHER = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
+  const signedIn = { current: async () => ({ did: ME }) };
+  const patch = (app: ReturnType<typeof internalApi>, body: unknown) =>
+    app.handle(
+      new Request("http://backend/me/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+
+  test("without a session both are refused, and the profile is never read", async () => {
+    const app = internalApi(testDeps({ sessions: { current: async () => null } }));
+    expect((await app.handle(new Request("http://backend/me/profile"))).status).toBe(401);
+    expect((await patch(app, { displayName: "x" })).status).toBe(401);
+  });
+
+  test("the profile read is the session's DID, whatever the request names", async () => {
+    const asked: Did[] = [];
+    const app = internalApi(
+      testDeps({
+        sessions: signedIn,
+        profiles: {
+          get: async (did) => {
+            asked.push(did);
+            return { ok: true, profile: { did, handle: "alice.example.com", displayName: "Alice" } };
+          },
+          setDisplayName: async (did, displayName) => {
+            asked.push(did);
+            return { ok: true, profile: { did, displayName } };
+          },
+        },
+      }),
+    );
+    const read = await app.handle(new Request(`http://backend/me/profile?did=${OTHER}`));
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ did: ME, handle: "alice.example.com", displayName: "Alice" });
+    const written = await patch(app, { displayName: "Ada", did: OTHER });
+    expect(await written.json()).toEqual({ did: ME, displayName: "Ada" });
+    expect(asked).toEqual([ME, ME]);
+  });
+
+  test("each read failure has its status", async () => {
+    const cases = [
+      ["session_ended", 401],
+      ["scope_missing", 403],
+      ["failed", 502],
+      ["pds_unreachable", 503],
+    ] as const;
+    for (const [reason, status] of cases) {
+      const app = internalApi(testDeps({ sessions: signedIn, profiles: { get: async () => ({ ok: false, reason }) } }));
+      const response = await app.handle(new Request("http://backend/me/profile"));
+      expect(response.status).toBe(status);
+      expect(((await problemOf(response)) as { code: string }).code).toBe(reason);
+    }
+  });
+
+  test("each write failure has its status", async () => {
+    const cases = [
+      ["name_invalid", 400],
+      ["name_too_long", 400],
+      ["session_ended", 401],
+      ["scope_missing", 403],
+      ["conflict", 409],
+      ["record_invalid", 502],
+      ["failed", 502],
+      ["pds_unreachable", 503],
+    ] as const;
+    for (const [reason, status] of cases) {
+      const app = internalApi(
+        testDeps({ sessions: signedIn, profiles: { setDisplayName: async () => ({ ok: false, reason }) } }),
+      );
+      const response = await patch(app, { displayName: "x" });
+      expect(response.status).toBe(status);
+      expect(((await problemOf(response)) as { code: string }).code).toBe(reason);
+    }
+  });
+
+  test("a display name that is not a string, or past the byte limit's length, never reaches the operation", async () => {
+    const app = internalApi(testDeps({ sessions: signedIn }));
+    for (const body of [{ displayName: 7 }, {}, { displayName: "a".repeat(641) }]) {
+      const response = await patch(app, body);
+      expect(response.status).toBe(422);
+      expect(((await problemOf(response)) as { code: string }).code).toBe("invalid_request");
+    }
   });
 });
