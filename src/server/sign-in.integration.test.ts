@@ -98,7 +98,9 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
 /** A complete sign-in for `did`: the session token web would keep. */
 async function signIn(did: Did): Promise<string> {
-  const response = await call("POST", "/auth/atproto/callback", { body: { query: `code=c&state=s&sub=${did}` } });
+  const response = await call("POST", "/auth/sign-in/atproto/callback", {
+    body: { query: `code=c&state=s&sub=${did}` },
+  });
   expect(response.status).toBe(200);
   const { sessionToken } = (await response.json()) as { sessionToken: string };
   tokens.push(sessionToken);
@@ -125,17 +127,32 @@ describe("sign-in and session", () => {
     expect(await ok.json()).toEqual({ url: "https://pds.example/oauth/authorize?request_uri=x" });
     const refused = await call("POST", "/auth/sign-in/atproto", { body: { handle: "mallory.example.com" } });
     expect(refused.status).toBe(400);
-    expect(await refused.json()).toEqual({ reason: "handle_unverified" });
-    expect((await call("POST", "/auth/sign-in/atproto", { body: { handle: "" } })).status).toBe(422);
+    expect(refused.headers.get("content-type")).toBe("application/problem+json");
+    expect(await refused.json()).toEqual({
+      type: "about:blank",
+      title: "Bad Request",
+      status: 400,
+      code: "handle_unverified",
+    });
+    // A body that breaks the schema is a problem too, and does not echo the input.
+    const invalid = await call("POST", "/auth/sign-in/atproto", { body: { handle: "" } });
+    expect(invalid.status).toBe(422);
+    expect(invalid.headers.get("content-type")).toBe("application/problem+json");
+    expect(await invalid.json()).toEqual({
+      type: "about:blank",
+      title: "Unprocessable Content",
+      status: 422,
+      code: "invalid_request",
+    });
     // A field the contract does not name is dropped before the handler runs (Elysia 1.4.32 normalises bodies).
     const extra = await call("POST", "/auth/sign-in/atproto", { body: { handle: "mallory.example.com", did: DID_B } });
-    expect(await extra.json()).toEqual({ reason: "handle_unverified" });
+    expect(((await extra.json()) as { code: string }).code).toBe("handle_unverified");
   });
 
   test("a failed callback makes no session", async () => {
-    const response = await call("POST", "/auth/atproto/callback", { body: { query: "code=c&state=unknown" } });
+    const response = await call("POST", "/auth/sign-in/atproto/callback", { body: { query: "code=c&state=unknown" } });
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ reason: "expired" });
+    expect(await response.json()).toEqual({ type: "about:blank", title: "Bad Request", status: 400, code: "expired" });
     expect(await admin("SELECT count(*) FROM auth.session")).toBe("0");
   });
 
@@ -174,6 +191,16 @@ describe("sign-in and session", () => {
     expect(email).not.toContain("aaaa");
     expect(name).toBe("");
     expect(await admin(`SELECT count(*) FROM auth.session WHERE "ipAddress" <> ''`)).toBe("0");
+  });
+
+  test("the member is a UUID inside backend, and no answer carries it", async () => {
+    const token = await signIn(DID_A);
+    const id = await admin(
+      `SELECT u.id FROM auth."user" u JOIN auth.account a ON a."userId" = u.id WHERE a."accountId" = '${DID_A}'`,
+    );
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const response = await call("GET", "/me/session", { headers: bearer(token) });
+    expect(await response.text()).not.toContain(id);
   });
 
   test("a session ends with its token set", async () => {

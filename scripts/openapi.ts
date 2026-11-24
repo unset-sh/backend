@@ -6,6 +6,7 @@
 import { toOpenAPISchema } from "@elysia/openapi";
 import { stringify } from "yaml";
 import { internalApi } from "../src/server/internal-api.ts";
+import { PROBLEM_CONTENT_TYPE } from "../src/server/problem.ts";
 
 export const SPEC_PATH = new URL("../api/internal/openapi.yaml", import.meta.url);
 
@@ -22,6 +23,7 @@ export function internalSpec(): string {
     sessions: { start: unserved, complete: unserved, current: unserved, signOut: unserved },
   });
   const { paths, components } = toOpenAPISchema(app, undefined, undefined, undefined, OPENAPI_VERSION);
+  labelProblems(paths);
   const document = {
     openapi: OPENAPI_VERSION,
     info: {
@@ -33,6 +35,27 @@ export function internalSpec(): string {
     components,
   };
   return stringify(document, { sortMapEntries: true, lineWidth: 0, aliasDuplicateObjects: false });
+}
+
+type Content = Record<string, { schema?: { properties?: Record<string, unknown> } }>;
+type Operations = Record<string, Record<string, { responses?: Record<string, { content?: Content }> }>>;
+
+/**
+ * @elysia/openapi 1.4.17 lists every response as `application/json`; a refusal is sent as
+ * `application/problem+json` (src/server/problem.ts), so the contract says that for every problem schema.
+ */
+function labelProblems(paths: unknown) {
+  for (const operations of Object.values((paths ?? {}) as Record<string, Operations[string]>)) {
+    for (const operation of Object.values(operations)) {
+      for (const response of Object.values(operation.responses ?? {})) {
+        const json = response.content?.["application/json"];
+        const properties = json?.schema?.properties;
+        if (response.content && json && properties && "type" in properties && "code" in properties) {
+          response.content = { [PROBLEM_CONTENT_TYPE]: json };
+        }
+      }
+    }
+  }
 }
 
 if (import.meta.main) {
