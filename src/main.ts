@@ -4,6 +4,7 @@ import { createIdentityNetwork } from "./adapters/atproto/identity-network.ts";
 import { createGrant } from "./adapters/atproto/oauth/grant.ts";
 import type { SavedSession, SavedState } from "./adapters/atproto/oauth/oauth-client.ts";
 import { createOAuthClient } from "./adapters/atproto/oauth/oauth-client.ts";
+import { createSignInLock } from "./adapters/atproto/oauth/sign-in-lock.ts";
 import { createPdsCall } from "./adapters/atproto/pds/pds-call.ts";
 import { createProfileStore } from "./adapters/atproto/pds/profile-store.ts";
 import { createAuth, createAuthDatabase, createSessions, telemetryVariablesSet } from "./adapters/auth/index.ts";
@@ -64,17 +65,20 @@ const resolveDid = createDidResolver({
   cacheMax: config.DID_DOC_CACHE_MAX,
 });
 const sessionStore = createOAuthSessionStore<SavedSession>({ pool, sealer, log });
+// The library reaches the token sets and its lock through the sign-in lock, so a sign-in replaces an account's token
+// set in place and a last sign-out cannot race it (sign-in-lock.ts).
+const signInLock = createSignInLock({ store: sessionStore, lock: createRequestLock({ pool: lockPool, log }) });
 const { client } = createOAuthClient({
   redirectUri: `${config.WEB_ORIGIN}/auth/callback`,
   stateStore: createOAuthStateStore<SavedState>({ pool, sealer, log }),
-  sessionStore,
-  requestLock: createRequestLock({ pool: lockPool, log }),
+  sessionStore: signInLock.tokenSets,
+  requestLock: signInLock.requestLock,
   fetch: libraryFetch(guard),
   network,
   resolveDid,
   log,
 });
-const grant = createGrant({ client, dropTokenSet: (did) => sessionStore.del(did), log });
+const grant = createGrant({ client, dropTokenSet: (did) => sessionStore.del(did), scopes: signInLock, log });
 const auth = createAuth({
   database: authDatabase,
   secret: config.BETTER_AUTH_SECRET,

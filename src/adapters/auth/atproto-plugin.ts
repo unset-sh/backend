@@ -70,44 +70,49 @@ export function atproto(grant: Grant) {
        */
       atprotoCallback: createAuthEndpoint.serverOnly(
         { method: "POST", body: withNonce("query", QUERY_MAX) },
-        async (ctx): Promise<CompleteResult> => {
-          const finished = await grant.finish(new URLSearchParams(ctx.body.query), ctx.body.nonce);
-          if (!finished.ok) return finished;
-          const { did } = finished;
-          const adapter = ctx.context.internalAdapter;
-          const key = { providerId: PROVIDER_ID, accountId: did };
-          let userId = (await adapter.findAccountByKey(key))?.userId;
-          if (userId === undefined) {
-            try {
-              const created = await adapter.createOAuthUser(
-                { name: "", email: placeholderEmail(did), emailVerified: false },
-                { providerId: PROVIDER_ID, accountId: did },
-              );
-              userId = created.user.id;
-            } catch (cause) {
-              // A second callback for the same new DID created it first; the unique key (migration 0007) refused ours.
-              userId = (await adapter.findAccountByKey(key))?.userId;
-              if (userId === undefined) throw cause;
+        async (ctx): Promise<CompleteResult> =>
+          grant.signingIn(async (): Promise<CompleteResult> => {
+            const finished = await grant.finish(new URLSearchParams(ctx.body.query), ctx.body.nonce);
+            if (!finished.ok) return finished;
+            const { did } = finished;
+            const adapter = ctx.context.internalAdapter;
+            const key = { providerId: PROVIDER_ID, accountId: did };
+            let userId = (await adapter.findAccountByKey(key))?.userId;
+            if (userId === undefined) {
+              try {
+                const created = await adapter.createOAuthUser(
+                  { name: "", email: placeholderEmail(did), emailVerified: false },
+                  { providerId: PROVIDER_ID, accountId: did },
+                );
+                userId = created.user.id;
+              } catch (cause) {
+                // A second callback for the same new DID created it first; the unique key (migration 0007) refused ours.
+                userId = (await adapter.findAccountByKey(key))?.userId;
+                if (userId === undefined) throw cause;
+              }
             }
-          }
-          const session = await adapter.createSession(userId, false, { did });
-          return { ok: true, sessionToken: session.token };
-        },
+            const session = await adapter.createSession(userId, false, { did });
+            return { ok: true, sessionToken: session.token };
+          }),
       ),
 
       /**
-       * Ends the caller's session, then the grant it rides on: deleting the token set ends every other session of the
-       * same account too (migration 0007), so no session outlives the grant.
+       * Ends the caller's session only. The grant it rides on ends with the account's last session: deleting the token
+       * set would end every other session of the account too (migration 0007), signing out its other browsers.
        */
       atprotoSignOut: createAuthEndpoint.serverOnly(
         { method: "POST", use: [sessionMiddleware] },
         async (ctx): Promise<SignOutResult> => {
           const { session } = ctx.context.session;
           const did = parseDid(String((session as { did?: unknown }).did ?? ""));
-          await ctx.context.internalAdapter.deleteSession(session.token);
+          const adapter = ctx.context.internalAdapter;
+          await adapter.deleteSession(session.token);
           if (did === null) return { ok: true };
+          // Live sessions only: Better Auth 1.7.25 internal-adapter.mjs `listSessions` reads expiresAt > now.
+          const remaining = async () =>
+            (await adapter.listSessions(session.userId)).filter((s) => (s as { did?: unknown }).did === did).length;
           try {
-            await grant.end(did, ctx.request?.signal ?? AbortSignal.timeout(15_000));
+            await grant.endIfLast(did, remaining, ctx.request?.signal ?? AbortSignal.timeout(15_000));
             return { ok: true };
           } catch {
             return { ok: false, reason: "failed" };

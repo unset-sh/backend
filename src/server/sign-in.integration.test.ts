@@ -1,10 +1,13 @@
 // The first slice's step 7 (sign-in and session) end to end through the internal API, against real Postgres: Better
 // Auth on its pg pool as `backend_auth`, the sealed OAuth stores as `backend`, migration 0007's links between them.
-// Only the authorization server is a stand-in: `grant` plays the OAuth client's part, writing the token set to the real
-// sealed store as the library does once it has checked the server's answer (sign-in.test.ts covers that part).
+// Only the authorization server is a stand-in: `grant` plays the OAuth client's part, replacing the token set in the
+// real sealed store as the library does once it has checked the server's answer (sign-in.test.ts covers that part),
+// through the real sign-in lock on the real advisory lock.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { FinishResult, Grant } from "../adapters/atproto/oauth/grant.ts";
+import { createGrant, type FinishResult, type Grant } from "../adapters/atproto/oauth/grant.ts";
+import { createSignInLock } from "../adapters/atproto/oauth/sign-in-lock.ts";
 import { createAuth, createAuthDatabase, createSessions, placeholderEmail } from "../adapters/auth/index.ts";
+import { createRequestLock } from "../adapters/postgres/lock.ts";
 import { createOAuthSessionStore, oauthSessionExists } from "../adapters/postgres/oauthStores.ts";
 import type { Pool } from "../adapters/postgres/pool.ts";
 import { startTestPostgres, type TestPostgres } from "../adapters/postgres/test-database.ts";
@@ -42,10 +45,20 @@ const ended: Did[] = [];
 
 /**
  * The authorization server's part. `finish` reads the DID from the query (`sub=`), as if the server had vouched for
- * it, and stores a token set for it in the real sealed store; `end` deletes it, as the library's revoke does.
+ * it, then does what @atproto/oauth-client 0.9.3 `callback` does with the store: deletes the account's old token set,
+ * then stores the new one. Everything else is the real grant; its revoke deletes the set, as the library's does.
  */
-function standInGrant(store: ReturnType<typeof createOAuthSessionStore>): Grant {
+function standInGrant(store: ReturnType<typeof createOAuthSessionStore>, lockPool: Pool): Grant {
+  const lock = createSignInLock({ store, lock: createRequestLock({ pool: lockPool, log }) });
+  const client = {
+    revoke: async (did: string) => {
+      ended.push(did as Did);
+      await lock.tokenSets.del(did);
+    },
+  };
+  const real = createGrant({ client: client as never, dropTokenSet: (did) => store.del(did), scopes: lock, log });
   return {
+    ...real,
     start: async (handle, nonce) =>
       handle === HANDLE_A && nonce === NONCE
         ? { ok: true, url: "https://pds.example/oauth/authorize?request_uri=x" }
@@ -55,12 +68,9 @@ function standInGrant(store: ReturnType<typeof createOAuthSessionStore>): Grant 
       if (nonce !== NONCE) return { ok: false, reason: "state_mismatch" };
       const did = parseDid(query.get("sub") ?? "");
       if (did === null) return { ok: false, reason: "expired" };
-      await store.set(did, { authMethod: { method: "none" }, tokenSet: { sub: did } } as never);
+      await lock.tokenSets.del(did);
+      await lock.tokenSets.set(did, { authMethod: { method: "none" }, tokenSet: { sub: did } } as never);
       return { ok: true, did };
-    },
-    async end(did) {
-      ended.push(did);
-      await store.del(did);
     },
   };
 }
@@ -81,7 +91,7 @@ beforeAll(async () => {
     database: authDatabase,
     secret: new Secret("s".repeat(48)),
     webOrigin: WEB_ORIGIN,
-    grant: standInGrant(store),
+    grant: standInGrant(store, await postgres.connectAs(database, "backend")),
     log,
   });
   app = createServer({ ...testDeps(), sessions: createSessions(auth) }, log);
@@ -232,18 +242,40 @@ describe("sign-in and session", () => {
     expect(await admin(`SELECT count(*) FROM auth.session WHERE did = '${DID_B}'`)).toBe("0");
   });
 
-  test("sign-out ends the session and the grant; the token replayed is refused", async () => {
+  test("a sign-in on another browser leaves the account's other sessions", async () => {
+    const first = await signIn(DID_A);
+    const second = await signIn(DID_A);
+    expect(await whoami(first)).toBe(DID_A);
+    expect(await whoami(second)).toBe(DID_A);
+  });
+
+  test("two sign-ins at once both keep their sessions", async () => {
+    const [x, y] = await Promise.all([signIn(DID_B), signIn(DID_B)]);
+    expect(await whoami(x)).toBe(DID_B);
+    expect(await whoami(y)).toBe(DID_B);
+  });
+
+  test("sign-out ends that browser's session only; the last one ends the grant", async () => {
     const token = await signIn(DID_A);
     const other = await signIn(DID_A);
+    const live = await admin(`SELECT count(*) FROM auth.session WHERE did = '${DID_A}'`);
+    ended.length = 0;
     const response = await call("POST", "/auth/sign-out", { headers: bearer(token) });
     expect(response.status).toBe(204);
-    expect(ended).toContain(DID_A);
-    expect(await oauthSessionExists(backend, DID_A)).toBe(false);
     expect(await whoami(token)).toBe(401);
     expect((await call("POST", "/auth/sign-out", { headers: bearer(token) })).status).toBe(401);
-    // The grant is gone, so the account's other sessions are too.
-    expect(await whoami(other)).toBe(401);
-    expect(await admin(`SELECT count(*) FROM auth.session WHERE did = '${DID_A}'`)).toBe("0");
+    // The account's other browsers keep their sessions and the grant they ride on.
+    expect(await whoami(other)).toBe(DID_A);
+    expect(ended).toEqual([]);
+    expect(await oauthSessionExists(backend, DID_A)).toBe(true);
+    expect(await admin(`SELECT count(*) FROM auth.session WHERE did = '${DID_A}'`)).toBe(String(Number(live) - 1));
+    // Signing out every remaining session: the last one ends the grant.
+    const tokensLeft = (await admin(`SELECT token FROM auth.session WHERE did = '${DID_A}'`)).split("\n");
+    for (const left of tokensLeft) {
+      expect((await call("POST", "/auth/sign-out", { headers: bearer(left) })).status).toBe(204);
+    }
+    expect(ended).toEqual([DID_A]);
+    expect(await oauthSessionExists(backend, DID_A)).toBe(false);
   });
 
   test("logs hold no DID, handle, email or token", () => {
